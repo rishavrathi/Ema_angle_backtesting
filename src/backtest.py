@@ -1,305 +1,224 @@
-"""
-backtest.py — Deterministic Bar-by-Bar Vectorized Execution Engine.
+"""Cost-aware, mark-to-market backtesting for fully collateralized 1x exposure.
 
-This module simulates the trading environment using historical OHLCV data.
-It strictly enforces a T+1 execution model to eliminate look-ahead bias,
-where signals generated at the close of bar `t` are executed at the open of bar `t+1`.
-Now includes realistic transaction costs, slippage, and advanced risk metrics.
+Gold and silver are treated as divisible synthetic price exposures. This module
+does not model CME multipliers, integer lots, margin, or contract rolls.
 """
+from __future__ import annotations
 
+from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Any, Union
 
 from .indicators import add_ema_features
 from .strategy import generate_signals
 
 
-def run_backtest(
-    df: pd.DataFrame,
-    fast: int,
-    slow: int,
-    threshold: float,
-    initial_equity: float,
-    commission_pct: float = 0.0,
-    slippage_pct: float = 0.0,
-    fixed_commission: float = 0.0,
-    baseline_mode: str = "standard"
-) -> Dict[str, Any]:
-    if df is None or len(df) < max(fast, slow) + 10:
-        return _empty_metrics(fast, slow, threshold, initial_equity, baseline_mode)
+LEDGER_COLUMNS = ["timestamp", "position", "gross_return", "turnover",
+                  "commission", "slippage", "net_return", "equity", "drawdown"]
 
-    # Calculate indicators
-    feat: pd.DataFrame = add_ema_features(df, fast, slow)
-    feat = feat.dropna()
 
-    if len(feat) < 5:
-        return _empty_metrics(fast, slow, threshold, initial_equity, baseline_mode)
+def _empty_ledger() -> pd.DataFrame:
+    return pd.DataFrame(columns=LEDGER_COLUMNS).set_index("timestamp")
 
-    # Generate deterministic signals based on the mode
-    raw_signals: pd.Series = generate_signals(feat, threshold, mode=baseline_mode)
 
-    # Extract numpy arrays for O(1) loop access
-    opens: np.ndarray = feat["Open"].values
-    closes: np.ndarray = feat["Close"].values
-    fast_ema: np.ndarray = feat["ema_fast"].values
-    slow_ema: np.ndarray = feat["ema_slow"].values
-    dates: pd.DatetimeIndex = feat.index
-    sigs: np.ndarray = raw_signals.values
+def _risk_metrics(ledger: pd.DataFrame, initial_equity: float) -> Dict[str, float]:
+    if ledger.empty:
+        return dict(sharpe_ratio=0.0, sortino_ratio=0.0,
+                    annualized_return=0.0, max_drawdown=0.0,
+                    var_95=np.nan, expected_shortfall_95=np.nan)
+    daily_equity = ledger["equity"].resample("1D").last().dropna()
+    daily = daily_equity.pct_change().dropna()
+    sharpe = 0.0
+    sortino = 0.0
+    if len(daily) > 1 and daily.std(ddof=1) > 0:
+        sharpe = float(np.sqrt(252.0) * daily.mean() / daily.std(ddof=1))
+    downside = daily[daily < 0]
+    if len(downside) > 1 and downside.std(ddof=1) > 0:
+        sortino = float(np.sqrt(252.0) * daily.mean() / downside.std(ddof=1))
+    days = max((ledger.index[-1] - ledger.index[0]).total_seconds() / 86400.0, 1.0)
+    cagr = float((ledger["equity"].iloc[-1] / initial_equity) ** (365.25 / days) - 1.0)
+    q05 = float(daily.quantile(0.05)) if len(daily) else np.nan
+    expected_shortfall = float(-daily[daily <= q05].mean()) if len(daily) else np.nan
+    return dict(sharpe_ratio=sharpe, sortino_ratio=sortino,
+                annualized_return=100.0 * cagr,
+                max_drawdown=float(-100.0 * ledger["drawdown"].min()),
+                var_95=float(-q05), expected_shortfall_95=expected_shortfall)
 
-    # Simulation State Variables
-    equity: float = initial_equity
-    position: int = 0         # 0=flat, 1=long, -1=short
-    entry_px: float = 0.0
-    entry_dt: Union[pd.Timestamp, None] = None
-    entry_qty: float = 0.0
-    
-    total_commission_paid: float = 0.0
-    total_slippage_paid: float = 0.0
 
-    trades: List[Dict[str, Any]] = []
-    equity_curve: List[float] = [equity]
-
-    # Bar-by-bar execution loop
-    for i in range(1, len(feat)):
-        prev_sig: int = sigs[i - 1]
-        prev_f: float = fast_ema[i - 1]
-        prev_s: float = slow_ema[i - 1]
-        open_px: float = opens[i]
-        dt: pd.Timestamp = dates[i]
-
-        # ── Exit Logic Evaluation ──────────────────────────────
-        if position == 1:
-            # Long Exit: Fast EMA crosses below Slow EMA (Trend Reversal)
-            if prev_f < prev_s:
-                exit_px = open_px * (1 - slippage_pct)
-                slippage_cost = (open_px - exit_px) * entry_qty
-                comm_cost = (exit_px * entry_qty * commission_pct) + fixed_commission
-                
-                gross_pnl = (open_px - entry_px) * entry_qty
-                net_pnl = (exit_px - entry_px) * entry_qty - comm_cost
-                
-                total_commission_paid += comm_cost
-                total_slippage_paid += slippage_cost
-                equity += net_pnl
-                
-                trades.append(_trade_record(entry_dt, dt, entry_px, exit_px, entry_qty, net_pnl, gross_pnl, "LONG"))
-                position = 0
-
-        elif position == -1:
-            # Short Exit: Fast EMA crosses above Slow EMA
-            if prev_f > prev_s:
-                exit_px = open_px * (1 + slippage_pct)
-                slippage_cost = (exit_px - open_px) * entry_qty
-                comm_cost = (exit_px * entry_qty * commission_pct) + fixed_commission
-                
-                gross_pnl = (entry_px - open_px) * entry_qty
-                net_pnl = (entry_px - exit_px) * entry_qty - comm_cost
-                
-                total_commission_paid += comm_cost
-                total_slippage_paid += slippage_cost
-                equity += net_pnl
-                
-                trades.append(_trade_record(entry_dt, dt, entry_px, exit_px, entry_qty, net_pnl, gross_pnl, "SHORT"))
-                position = 0
-
-        # ── Entry Logic Evaluation ─────────────────────────────
-        if position == 0:
-            if prev_sig == 1:
-                position = 1
-                entry_px = open_px * (1 + slippage_pct)
-                entry_qty = (equity * 0.99) / entry_px if entry_px > 0 else 0.0
-                
-                slippage_cost = (entry_px - open_px) * entry_qty
-                comm_cost = (entry_px * entry_qty * commission_pct) + fixed_commission
-                equity -= comm_cost
-                
-                total_commission_paid += comm_cost
-                total_slippage_paid += slippage_cost
-                entry_dt = dt
-
-            elif prev_sig == -1:
-                position = -1
-                entry_px = open_px * (1 - slippage_pct)
-                entry_qty = (equity * 0.99) / entry_px if entry_px > 0 else 0.0
-                
-                slippage_cost = (open_px - entry_px) * entry_qty
-                comm_cost = (entry_px * entry_qty * commission_pct) + fixed_commission
-                equity -= comm_cost
-                
-                total_commission_paid += comm_cost
-                total_slippage_paid += slippage_cost
-                entry_dt = dt
-
-        equity_curve.append(equity)
-
-    # ── Liquidation of Open Positions at Terminal Bar ────────
-    if position != 0 and len(feat) > 0:
-        last_px: float = closes[-1]
-        last_dt: pd.Timestamp = dates[-1]
-
-        if position == 1:
-            exit_px = last_px * (1 - slippage_pct)
-            gross_pnl = (last_px - entry_px) * entry_qty
-            net_pnl = (exit_px - entry_px) * entry_qty - (exit_px * entry_qty * commission_pct + fixed_commission)
+def _break_even_cost_bps(ledger: pd.DataFrame) -> float:
+    """One-way proportional cost per unit turnover that reduces wealth to 1."""
+    if ledger.empty or float((1 + ledger["gross_return"]).prod()) <= 1.0:
+        return 0.0
+    gross = ledger["gross_return"].to_numpy(float)
+    turnover = ledger["turnover"].to_numpy(float)
+    def wealth(cost: float) -> float:
+        return float(np.prod((1.0 + gross) * np.power(1.0 - cost, turnover)))
+    lo, hi = 0.0, 0.999999
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if wealth(mid) > 1.0:
+            lo = mid
         else:
-            exit_px = last_px * (1 + slippage_pct)
-            gross_pnl = (entry_px - last_px) * entry_qty
-            net_pnl = (entry_px - exit_px) * entry_qty - (exit_px * entry_qty * commission_pct + fixed_commission)
-
-        equity += net_pnl
-        trades.append(_trade_record(
-            entry_dt, last_dt, entry_px, exit_px,
-            entry_qty, net_pnl, gross_pnl, "LONG" if position == 1 else "SHORT"
-        ))
-
-    return _compute_metrics(trades, equity_curve, initial_equity, fast, slow, threshold, total_commission_paid, total_slippage_paid, baseline_mode)
+            hi = mid
+    return 10000.0 * (lo + hi) / 2
 
 
-def _trade_record(
-    entry_dt: pd.Timestamp,
-    exit_dt: pd.Timestamp,
-    entry_px: float,
-    exit_px: float,
-    qty: float,
-    net_pnl: float,
-    gross_pnl: float,
-    direction: str
-) -> Dict[str, Any]:
-    ret_pct: float = (net_pnl / (abs(qty * entry_px)) * 100.0) if (qty > 0 and entry_px > 0) else 0.0
-    holding_time = (exit_dt - entry_dt).total_seconds() / 3600.0 # in hours
+def metrics_from_ledger(ledger: pd.DataFrame, trades: list[Dict[str, Any]],
+                        initial_equity: float, fast: int, slow: int,
+                        threshold: float, mode: str) -> Dict[str, Any]:
+    final_equity = initial_equity if ledger.empty else float(ledger["equity"].iloc[-1])
+    if not ledger.empty:
+        reconciled = initial_equity * float((1.0 + ledger["net_return"]).prod())
+        if not np.isclose(final_equity, reconciled, rtol=1e-10, atol=1e-8):
+            raise AssertionError("final-equity reconciliation failed")
+    pnl = np.asarray([t["net_pnl"] for t in trades], dtype=float)
+    wins, losses = pnl[pnl > 0], pnl[pnl <= 0]
+    pf = float(wins.sum() / abs(losses.sum())) if len(losses) and losses.sum() < 0 else 0.0
+    risk = _risk_metrics(ledger, initial_equity)
     return {
-        "entry_date":  entry_dt,
-        "exit_date":   exit_dt,
-        "direction":   direction,
-        "entry_price": round(float(entry_px), 6),
-        "exit_price":  round(float(exit_px), 6),
-        "qty":         round(float(qty), 6),
-        "gross_pnl":   round(float(gross_pnl), 4),
-        "net_pnl":     round(float(net_pnl), 4),
-        "return_pct":  round(float(ret_pct), 4),
-        "holding_time_hrs": round(float(holding_time), 2),
+        "bar_returns": ledger, "trades": trades, "total_trades": len(trades),
+        "long_trades": sum(t["direction"] == "LONG" for t in trades),
+        "short_trades": sum(t["direction"] == "SHORT" for t in trades),
+        "winning_trades": int((pnl > 0).sum()), "losing_trades": int((pnl <= 0).sum()),
+        "win_rate": float((pnl > 0).mean() * 100.0) if len(pnl) else 0.0,
+        "total_net_profit": float(final_equity - initial_equity),
+        "avg_trade_net": float(pnl.mean()) if len(pnl) else 0.0,
+        "expectancy": float(pnl.mean()) if len(pnl) else 0.0,
+        "final_equity": final_equity, "profit_factor": pf,
+        **risk,
+        "exposure_pct": float(100.0 * ledger["position"].abs().mean()) if not ledger.empty else 0.0,
+        "total_turnover": float(ledger["turnover"].sum()) if not ledger.empty else 0.0,
+        "position_changes": int((ledger["turnover"] > 0).sum()) if not ledger.empty else 0,
+        "total_commission_paid": float(ledger["commission"].sum()) if not ledger.empty else 0.0,
+        "total_slippage_paid": float(ledger["slippage"].sum()) if not ledger.empty else 0.0,
+        "break_even_cost_bps": _break_even_cost_bps(ledger),
+        "fast_ema": fast, "slow_ema": slow, "ema_pair": f"EMA({fast},{slow})",
+        "angle_threshold": threshold, "baseline_mode": mode,
+        "accounting_model": "fully_collateralized_synthetic_1x",
     }
 
 
-def _compute_metrics(
-    trades: List[Dict[str, Any]],
-    equity_curve: List[float],
-    initial_equity: float,
-    fast: int,
-    slow: int,
-    threshold: float,
-    total_commission_paid: float,
-    total_slippage_paid: float,
-    baseline_mode: str
-) -> Dict[str, Any]:
-    if not trades:
-        return _empty_metrics(fast, slow, threshold, initial_equity, baseline_mode)
+def run_backtest(df: pd.DataFrame, fast: int, slow: int, threshold: float,
+                 initial_equity: float, commission_pct: float = 0.0,
+                 slippage_pct: float = 0.0, fixed_commission: float = 0.0,
+                 baseline_mode: str = "standard",
+                 execution_start: Optional[pd.Timestamp] = None,
+                 execution_end: Optional[pd.Timestamp] = None,
+                 precomputed_features: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """Return timestamped net bar returns with prior history retained for warm-up."""
+    if fixed_commission:
+        raise ValueError("fixed dollar commission is undefined for synthetic exposure")
+    if df is None or len(df) < max(fast, slow) + 2:
+        return metrics_from_ledger(_empty_ledger(), [], initial_equity,
+                                   fast, slow, threshold, baseline_mode)
+    feat = (precomputed_features.copy() if precomputed_features is not None
+            else add_ema_features(df.sort_index(), fast, slow,
+                                  int(threshold) if baseline_mode == "macd" else 9).dropna().copy())
+    if len(feat) < 2:
+        return metrics_from_ledger(_empty_ledger(), [], initial_equity,
+                                   fast, slow, threshold, baseline_mode)
+    signals = generate_signals(feat, threshold, baseline_mode)
+    start = feat.index[1] if execution_start is None else pd.Timestamp(execution_start)
+    end = feat.index[-1] if execution_end is None else pd.Timestamp(execution_end)
 
-    wins: List[Dict[str, Any]] = [t for t in trades if t["net_pnl"] > 0]
-    losses: List[Dict[str, Any]] = [t for t in trades if t["net_pnl"] <= 0]
+    equity = float(initial_equity)
+    peak = equity
+    position = 0
+    active_trade: Optional[Dict[str, Any]] = None
+    trades: list[Dict[str, Any]] = []
+    rows: list[Dict[str, Any]] = []
 
-    gross_profit: float = sum(t["gross_pnl"] for t in wins)
-    gross_loss: float = abs(sum(t["gross_pnl"] for t in losses))
-    
-    net_profit_sum: float = sum(t["net_pnl"] for t in wins)
-    net_loss_sum: float = abs(sum(t["net_pnl"] for t in losses))
+    index = feat.index
+    signal_values = signals.to_numpy(dtype=np.int8)
+    fast_values = feat["ema_fast"].to_numpy(dtype=float)
+    slow_values = feat["ema_slow"].to_numpy(dtype=float)
+    open_values = feat["Open"].to_numpy(dtype=float)
+    close_values = feat["Close"].to_numpy(dtype=float)
+    eligible = np.flatnonzero((index >= start) & (index <= end))
+    for ordinal, i in enumerate(eligible):
+        if i == 0:
+            continue
+        ts = index[i]
+        previous_signal = int(signal_values[i - 1])
+        previous_fast = fast_values[i - 1]
+        previous_slow = slow_values[i - 1]
+        target = position
+        if baseline_mode == "buy_hold":
+            target = 1
+        elif position == 1 and previous_fast < previous_slow:
+            target = previous_signal if previous_signal == -1 else 0
+        elif position == -1 and previous_fast > previous_slow:
+            target = previous_signal if previous_signal == 1 else 0
+        elif target == 0:
+            if previous_signal in (-1, 1):
+                target = previous_signal
 
-    profit_factor: float = (net_profit_sum / net_loss_sum) if net_loss_sum > 0 else float('inf')
-    win_rate: float = (len(wins) / len(trades) * 100.0) if trades else 0.0
-    total_net_pnl: float = sum(t["net_pnl"] for t in trades)
-    total_gross_pnl: float = sum(t["gross_pnl"] for t in trades)
-    
-    avg_trade_net = total_net_pnl / len(trades)
-    avg_holding_time = np.mean([t["holding_time_hrs"] for t in trades])
+        equity_before = equity
+        is_terminal = ordinal == len(eligible) - 1
+        commission = 0.0
+        slippage = 0.0
 
-    # Maximum Drawdown Calculation
-    eq_ary: np.ndarray = np.array(equity_curve)
-    peaks: np.ndarray = np.maximum.accumulate(eq_ary)
-    drawdowns: np.ndarray = (peaks - eq_ary) / peaks
-    max_dd: float = float(np.max(drawdowns) * 100.0) if len(drawdowns) > 0 else 0.0
-    avg_dd: float = float(np.mean(drawdowns[drawdowns > 0]) * 100.0) if len(drawdowns[drawdowns > 0]) > 0 else 0.0
+        # Events are ordered: close old position, then open the new position.  This
+        # makes reversal attribution exact instead of assigning the new trade's
+        # entry cost/return to the trade being closed.
+        if position != 0 and target != position:
+            exit_commission = equity * commission_pct
+            exit_slippage = equity * slippage_pct
+            commission += exit_commission
+            slippage += exit_slippage
+            equity -= exit_commission + exit_slippage
+            if active_trade is None:
+                raise AssertionError("open position has no active trade")
+            active_trade.update(exit_date=ts,
+                                net_pnl=float(equity - active_trade["entry_equity"]))
+            trades.append(active_trade)
+            active_trade = None
+        if target != 0 and target != position:
+            active_trade = {"entry_date": ts,
+                            "direction": "LONG" if target == 1 else "SHORT",
+                            "entry_equity": float(equity)}
+            entry_commission = equity * commission_pct
+            entry_slippage = equity * slippage_pct
+            commission += entry_commission
+            slippage += entry_slippage
+            equity -= entry_commission + entry_slippage
 
-    # Risk Ratios
-    eq_series: pd.Series = pd.Series(equity_curve)
-    rets: pd.Series = eq_series.pct_change().dropna()
-    mean_ret: float = float(rets.mean())
-    std_ret: float = float(rets.std())
-    downside_std: float = float(rets[rets < 0].std())
-    
-    annualization_factor = np.sqrt(252 * 24) # Assuming hourly data baseline scaling for comparison
-    
-    sharpe: float = 0.0
-    if std_ret != 0 and not np.isnan(std_ret):
-        sharpe = (mean_ret / std_ret) * annualization_factor
-        
-    sortino: float = 0.0
-    if downside_std != 0 and not np.isnan(downside_std):
-        sortino = (mean_ret / downside_std) * annualization_factor
-        
-    calmar: float = 0.0
-    annualized_return = ((equity_curve[-1] / initial_equity) ** (1 / max((len(equity_curve) / (252*24)), 1)) - 1) * 100 
-    if max_dd > 0:
-        calmar = annualized_return / max_dd
+        open_px = open_values[i]
+        next_px = close_values[i] if is_terminal else open_values[eligible[ordinal + 1]]
+        gross_return = float(target * (next_px / open_px - 1.0)) if open_px else 0.0
+        equity *= 1.0 + gross_return
 
-    return {
-        "trades": trades,
-        "total_trades": len(trades),
-        "long_trades": sum(1 for t in trades if t["direction"] == "LONG"),
-        "short_trades": sum(1 for t in trades if t["direction"] == "SHORT"),
-        "winning_trades": len(wins),
-        "losing_trades": len(losses),
-        "win_rate": round(win_rate, 2),
-        "total_gross_profit": round(total_gross_pnl, 2),
-        "total_net_profit": round(total_net_pnl, 2),
-        "avg_trade_net": round(avg_trade_net, 2),
-        "expectancy": round(avg_trade_net, 2), 
-        "profit_factor": round(profit_factor, 2) if profit_factor != float('inf') else 999.9,
-        "sharpe_ratio": round(sharpe, 4),
-        "sortino_ratio": round(sortino, 4),
-        "calmar_ratio": round(calmar, 4),
-        "max_drawdown": round(max_dd, 2),
-        "avg_drawdown": round(avg_dd, 2),
-        "annualized_return": round(annualized_return, 2),
-        "final_equity": round(equity_curve[-1], 2),
-        "total_commission_paid": round(total_commission_paid, 2),
-        "total_slippage_paid": round(total_slippage_paid, 2),
-        "avg_holding_time_hrs": round(avg_holding_time, 2),
-        "fast_ema": fast,
-        "slow_ema": slow,
-        "ema_pair": f"EMA({fast},{slow})",
-        "angle_threshold": threshold,
-        "baseline_mode": baseline_mode
-    }
+        # Liquidate after the terminal open-to-close return, at terminal equity.
+        if is_terminal and target != 0:
+            exit_commission = equity * commission_pct
+            exit_slippage = equity * slippage_pct
+            commission += exit_commission
+            slippage += exit_slippage
+            equity -= exit_commission + exit_slippage
+            if active_trade is None:
+                raise AssertionError("terminal position has no active trade")
+            active_trade.update(exit_date=ts,
+                                net_pnl=float(equity - active_trade["entry_equity"]))
+            trades.append(active_trade)
+            active_trade = None
 
+        turnover = abs(target - position) + (abs(target) if is_terminal else 0)
+        net_return = equity / equity_before - 1.0
+        peak = max(peak, equity)
+        rows.append({"timestamp": ts, "position": int(target), "gross_return": gross_return,
+                     "turnover": float(turnover), "commission": float(commission),
+                     "slippage": float(slippage), "net_return": float(net_return),
+                     "equity": float(equity), "drawdown": float(equity / peak - 1.0)})
 
-def _empty_metrics(fast: int, slow: int, threshold: float, initial_equity: float, baseline_mode: str) -> Dict[str, Any]:
-    return {
-        "trades": [],
-        "total_trades": 0,
-        "long_trades": 0,
-        "short_trades": 0,
-        "winning_trades": 0,
-        "losing_trades": 0,
-        "win_rate": 0.0,
-        "total_gross_profit": 0.0,
-        "total_net_profit": 0.0,
-        "avg_trade_net": 0.0,
-        "expectancy": 0.0,
-        "profit_factor": 0.0,
-        "sharpe_ratio": 0.0,
-        "sortino_ratio": 0.0,
-        "calmar_ratio": 0.0,
-        "max_drawdown": 0.0,
-        "avg_drawdown": 0.0,
-        "annualized_return": 0.0,
-        "final_equity": initial_equity,
-        "total_commission_paid": 0.0,
-        "total_slippage_paid": 0.0,
-        "avg_holding_time_hrs": 0.0,
-        "fast_ema": fast,
-        "slow_ema": slow,
-        "ema_pair": f"EMA({fast},{slow})",
-        "angle_threshold": threshold,
-        "baseline_mode": baseline_mode
-    }
+        position = target
+        if is_terminal:
+            position = 0
+
+    ledger = pd.DataFrame(rows)
+    ledger = _empty_ledger() if ledger.empty else ledger.set_index("timestamp")
+    ledger.index = pd.DatetimeIndex(ledger.index)
+    trade_pnl = sum(t["net_pnl"] for t in trades)
+    if not np.isclose(trade_pnl, equity - initial_equity, rtol=1e-10, atol=1e-8):
+        raise AssertionError("trade-P&L and portfolio-ledger reconciliation failed")
+    return metrics_from_ledger(ledger, trades, initial_equity,
+                               fast, slow, threshold, baseline_mode)

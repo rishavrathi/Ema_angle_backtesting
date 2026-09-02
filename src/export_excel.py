@@ -153,7 +153,7 @@ class ExcelExporter:
         for asset, tf_dict in results.items():
             for tf, pair_dict in tf_dict.items():
                 sorted_items = sorted(pair_dict.items(), key=lambda kv: kv[1].get(
-                    "total_profit", -1e18), reverse=True)
+                    "total_net_profit", -1e18), reverse=True)
                 for (f, s, thr), m in sorted_items:
                     if m.get("total_trades", 0) == 0:
                         continue
@@ -164,7 +164,7 @@ class ExcelExporter:
                         m["total_trades"], m["long_trades"], m["short_trades"],
                         m["winning_trades"], m["losing_trades"],
                         wr,
-                        round(m["total_profit"], 2), round(m["avg_profit"], 2),
+                        round(m["total_net_profit"], 2), round(m["avg_trade_net"], 2),
                         round(m["profit_factor"], 2), round(
                             m["sharpe_ratio"], 4),
                         round(m["max_drawdown"], 2), round(
@@ -172,7 +172,7 @@ class ExcelExporter:
                     ])
                     _style_row(ws, ri, ri % 2 == 0)
                     _color_winrate(ws.cell(ri, WR_COL), wr)
-                    _color_cell(ws.cell(ri, PR_COL), m["total_profit"])
+                    _color_cell(ws.cell(ri, PR_COL), m["total_net_profit"])
                     _color_cell(ws.cell(ri, DD_COL),
                                 m["max_drawdown"], invert=True)
                     ri += 1
@@ -205,7 +205,7 @@ class ExcelExporter:
         for asset, tf_dict in results.items():
             for tf, pair_dict in tf_dict.items():
                 sorted_items = sorted(pair_dict.items(), key=lambda kv: kv[1].get(
-                    "total_profit", -1e18), reverse=True)
+                    "total_net_profit", -1e18), reverse=True)
                 for (f, s, thr), m in sorted_items:
                     wr = round(m.get("win_rate", 0.0), 2)
                     if m.get("total_trades", 0) == 0 or wr < 50:
@@ -216,7 +216,7 @@ class ExcelExporter:
                         m["total_trades"], m["long_trades"], m["short_trades"],
                         m["winning_trades"], m["losing_trades"],
                         wr,
-                        round(m["total_profit"], 2), round(m["avg_profit"], 2),
+                        round(m["total_net_profit"], 2), round(m["avg_trade_net"], 2),
                         round(m["profit_factor"], 2), round(
                             m["sharpe_ratio"], 4),
                         round(m["max_drawdown"], 2), round(
@@ -224,7 +224,7 @@ class ExcelExporter:
                     ])
                     _style_row(ws, ri, ri % 2 == 0)
                     _color_winrate(ws.cell(ri, WR_COL), wr)
-                    _color_cell(ws.cell(ri, PR_COL), m["total_profit"])
+                    _color_cell(ws.cell(ri, PR_COL), m["total_net_profit"])
                     _color_cell(ws.cell(ri, DD_COL),
                                 m["max_drawdown"], invert=True)
                     ri += 1
@@ -243,7 +243,7 @@ class ExcelExporter:
                     continue
 
                 best_key = max(pair_dict.keys(), key=lambda k: pair_dict[k].get(
-                    "total_profit", -1e18))
+                    "total_net_profit", -1e18))
                 m = pair_dict[best_key]
                 if m.get("total_trades", 0) == 0:
                     continue
@@ -251,7 +251,7 @@ class ExcelExporter:
                 f, s, thr = best_key
                 ws = wb.create_sheet(f"{asset[:3]}_{tf}_Logs")
 
-                title = f"Transaction Ledger | {asset} ({tf}) | EMA({f},{s}) | Angle >= {thr}° | Profit: ${m['total_profit']:,.2f}"
+                title = f"Transaction Ledger | {asset} ({tf}) | EMA({f},{s}) | Angle >= {thr}° | Profit: ${m['total_net_profit']:,.2f}"
                 ws.append([title])
                 ws["A1"].font = Font(bold=True, size=11,
                                      color=self.COLORS["trades"])
@@ -265,7 +265,7 @@ class ExcelExporter:
                 RES_COL = TRADE_COLS.index("Result") + 1
 
                 for i, t in enumerate(m["trades"], 1):
-                    pnl = t["pnl"]
+                    pnl = t["net_pnl"]
                     res = "WIN" if pnl > 0 else "LOSS"
                     dt_fmt = "%Y-%m-%d %H:%M"
 

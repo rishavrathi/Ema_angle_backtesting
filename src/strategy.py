@@ -33,6 +33,13 @@ def generate_signals(df: pd.DataFrame, threshold: float, mode: str = "norm_angle
     elif mode == "standard":
         long_raw = base_long
         short_raw = base_short
+
+    elif mode == "norm_slope_fast":
+        import numpy as np
+        slope_threshold = np.tan(np.radians(threshold))
+        slope = df["norm_slope_fast"]
+        long_raw = base_long & (slope >= slope_threshold)
+        short_raw = base_short & (slope <= -slope_threshold)
         
     elif mode == "norm_slope":
         # threshold is passed as angle, convert back to slope for equivalent comparison
@@ -45,20 +52,31 @@ def generate_signals(df: pd.DataFrame, threshold: float, mode: str = "norm_angle
         
     elif mode == "roc":
         roc = df["roc_fast"]
-        # arbitrarily using threshold as ROC percentage
         long_raw = base_long & (roc >= threshold)
         short_raw = base_short & (roc <= -threshold)
         
     elif mode == "macd":
         macd = df["macd_hist"]
-        # Using threshold as MACD hist > 0 or specific arbitrary threshold
         long_raw = base_long & (macd > 0)
         short_raw = base_short & (macd < 0)
-        
-    elif mode == "linreg":
-        linreg = df["linreg_slope_fast"]
-        long_raw = base_long & (linreg > 0)
-        short_raw = base_short & (linreg < 0)
+
+    elif mode == "log_velocity":
+        velocity = df["log_velocity_fast"]
+        long_raw = base_long & (velocity >= threshold)
+        short_raw = base_short & (velocity <= -threshold)
+
+    elif mode == "vol_scaled":
+        velocity = df["vol_scaled_velocity_fast"]
+        long_raw = base_long & (velocity >= threshold)
+        short_raw = base_short & (velocity <= -threshold)
+
+    elif mode == "tsmom":
+        momentum = df["ts_momentum"]
+        long_raw = momentum > threshold
+        short_raw = momentum < -threshold
+
+    elif mode == "buy_hold":
+        long_raw[:] = True
 
     # Apply conditions
     signal[long_raw] = 1

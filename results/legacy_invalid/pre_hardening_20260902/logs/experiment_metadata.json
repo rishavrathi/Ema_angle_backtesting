@@ -1,0 +1,50 @@
+{
+    "execution_timestamp": "2026-09-01T08:34:17.568320",
+    "environment": {
+        "os": "Linux",
+        "os_version": "#1 SMP PREEMPT_DYNAMIC Tue, 04 Aug 2026 11:19:27 +0000",
+        "python_version": "3.14.6",
+        "dependencies": "Unavailable"
+    },
+    "parameters": {
+        "initial_equity": 10000.0,
+        "assets": [
+            "Gold",
+            "Silver",
+            "Bitcoin"
+        ],
+        "timeframes": [
+            "1m",
+            "5m",
+            "15m",
+            "1h"
+        ],
+        "ema_pairs": [
+            "(9,15)",
+            "(9,21)",
+            "(9,50)",
+            "(9,200)",
+            "(15,21)",
+            "(15,50)",
+            "(15,200)",
+            "(21,50)",
+            "(21,200)",
+            "(50,200)"
+        ],
+        "angle_thresholds": [
+            0.01,
+            0.02,
+            0.03,
+            0.04,
+            0.05,
+            0.075,
+            0.1,
+            0.15,
+            0.2,
+            0.25,
+            0.3,
+            0.5
+        ],
+        "total_combinations": 1440
+    }
+}

@@ -1,215 +1,204 @@
-"""
-optimizer.py — Parameter Optimization, Walk-Forward Analysis, and Regime Detection.
-
-This module orchestrates the complete grid search, executing backtests
-across every possible combination of Assets, Timeframes, EMA Pairs, and Angle Thresholds.
-It strictly enforces Walk-Forward Analysis (WFA) to prevent optimization bias.
-"""
+"""Anchored walk-forward selection with fair, independently optimized baselines."""
+from __future__ import annotations
 
 import logging
+from typing import Any, Dict, Iterable, List, Tuple
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List
 
-from .config import EMA_PAIRS, ANGLE_THRESHOLDS, ASSETS, TIMEFRAMES, RANK_METRIC
-from .config import INITIAL_EQUITY, COMMISSION_PCT, SLIPPAGE_PCT, FIXED_COMMISSION, WFA_TRAIN_SPLIT, BASELINES
-from .backtest import run_backtest
+from .backtest import metrics_from_ledger, run_backtest
+from .config import (ANGLE_THRESHOLDS, COMMISSION_PCT, EMA_PAIRS,
+                     FIXED_COMMISSION, INITIAL_EQUITY, SLIPPAGE_PCT)
+from .indicators import add_ema_features
 
 log = logging.getLogger(__name__)
+FOLDS = [(0.50, 0.60), (0.60, 0.70), (0.70, 0.80),
+         (0.80, 0.90), (0.90, 1.00)]
+QUANTILES = (0.60, 0.70, 0.80, 0.90)
+MACD_SIGNAL_PERIODS = (5, 9, 15)
+MODELS = ("norm_angle", "log_velocity", "vol_scaled",
+          "standard", "roc", "macd", "tsmom", "buy_hold")
 
 
 def detect_regime(df: pd.DataFrame) -> str:
-    """Detects the primary market regime for a given slice of data."""
     if len(df) < 50:
         return "UNKNOWN"
-        
-    closes = df["Close"]
-    sma50 = closes.rolling(50).mean()
-    
-    # Trend
-    if closes.iloc[-1] > sma50.iloc[-1] and closes.iloc[0] < closes.iloc[-1]:
-        trend = "BULL"
-    elif closes.iloc[-1] < sma50.iloc[-1] and closes.iloc[0] > closes.iloc[-1]:
-        trend = "BEAR"
-    else:
-        trend = "SIDEWAYS"
-        
-    # Volatility (ATR approx)
-    high = df["High"]
-    low = df["Low"]
-    tr = high - low
-    atr = tr.rolling(14).mean()
-    atr_pct = (atr / closes) * 100
-    
-    vol_regime = "HIGH_VOL" if atr_pct.mean() > 1.0 else "LOW_VOL"
-    
-    return f"{trend}_{vol_regime}"
+    close = df["Close"]
+    sma = close.rolling(50).mean()
+    trend = "BULL" if close.iloc[-1] > sma.iloc[-1] and close.iloc[-1] > close.iloc[0] else (
+        "BEAR" if close.iloc[-1] < sma.iloc[-1] and close.iloc[-1] < close.iloc[0] else "SIDEWAYS")
+    atr_pct = ((df["High"] - df["Low"]).rolling(14).mean() / close).mean() * 100.0
+    return f"{trend}_{'HIGH_VOL' if atr_pct > 1.0 else 'LOW_VOL'}"
 
 
-def run_grid_search_on_slice(df_slice: pd.DataFrame, baseline_mode: str = "norm_angle") -> Dict[Any, Dict[str, Any]]:
-    """Runs a grid search on a specific slice of data."""
-    results = {}
-    for (fast, slow) in EMA_PAIRS:
-        for threshold in ANGLE_THRESHOLDS:
-            metrics = run_backtest(
-                df_slice, fast, slow, threshold, INITIAL_EQUITY,
-                COMMISSION_PCT, SLIPPAGE_PCT, FIXED_COMMISSION, baseline_mode
-            )
-            results[(fast, slow, threshold)] = metrics
-    return results
+def _thresholds(train: pd.DataFrame, fast: int, slow: int, mode: str,
+                features: pd.DataFrame | None = None) -> Iterable[float]:
+    if mode in ("standard", "buy_hold"):
+        return (0.0,)
+    if mode == "macd":
+        return MACD_SIGNAL_PERIODS
+    if mode == "roc":
+        return (0.05, 0.10, 0.20, 0.50)
+    if mode == "tsmom":
+        return (0.0, 0.001, 0.0025, 0.005)
+    feat = features if features is not None else add_ema_features(train, fast, slow).dropna()
+    column = {"norm_angle": "angle_fast", "log_velocity": "log_velocity_fast",
+              "vol_scaled": "vol_scaled_velocity_fast"}[mode]
+    values = feat[column].abs().replace([np.inf, -np.inf], np.nan).dropna()
+    if values.empty:
+        return (0.0,)
+    return tuple(float(values.quantile(q)) for q in QUANTILES)
 
 
-def select_best_parameter(results_dict: Dict[Any, Dict[str, Any]], rank_metric: str) -> tuple:
-    """Selects the best parameter tuple based on the ranking metric."""
-    best_param = None
-    best_val = -float('inf')
-    
-    # Mapping config keys to metric dict keys
-    metric_map = {
-        "total_profit": "total_net_profit",
-        "sharpe_ratio": "sharpe_ratio",
-        "profit_factor": "profit_factor",
-        "win_rate": "win_rate"
-    }
-    
-    target_key = metric_map.get(rank_metric, "total_net_profit")
-    
-    for param, metrics in results_dict.items():
-        if metrics.get("total_trades", 0) > 0:
-            val = metrics.get(target_key, -float('inf'))
-            if val != 999.9 and val > best_val:
-                best_val = val
-                best_param = param
-                
-    if best_param is None and len(results_dict) > 0:
-        # Fallback to first if all fail
-        return list(results_dict.keys())[0]
-        
-    return best_param
+def _daily_mean(result: Dict[str, Any]) -> float:
+    ledger = result["bar_returns"]
+    if ledger.empty:
+        return -np.inf
+    daily = ledger["equity"].resample("1D").last().pct_change().dropna()
+    return float(daily.mean()) if len(daily) else float(ledger["net_return"].mean())
 
 
-def run_walk_forward_analysis(
-    data_store: Dict[str, Dict[str, pd.DataFrame]],
-) -> Dict[str, Any]:
-    """
-    Executes Walk-Forward Analysis across all assets and timeframes.
-    Splits data into IS and OOS, optimizes on IS, validates on OOS.
-    Also executes regime robustness and baseline comparisons.
-    """
-    wfa_results = {}
-    baseline_results = {}
-    regime_results = {}
-    
-    total_iterations = len(ASSETS) * len(TIMEFRAMES)
-    completed = 0
+def select_model(train: pd.DataFrame, mode: str) -> Tuple[int, int, float]:
+    """Select one model using training data only and mean after-cost daily return."""
+    pairs = (EMA_PAIRS[0],) if mode == "buy_hold" else EMA_PAIRS
+    best: Tuple[int, int, float] | None = None
+    best_score = -np.inf
+    for fast, slow in pairs:
+        features = add_ema_features(train, fast, slow).dropna()
+        for threshold in _thresholds(train, fast, slow, mode, features):
+            candidate_features = (add_ema_features(train, fast, slow, int(threshold)).dropna()
+                                  if mode == "macd" else features)
+            result = run_backtest(train, fast, slow, threshold, INITIAL_EQUITY,
+                                  COMMISSION_PCT, SLIPPAGE_PCT, FIXED_COMMISSION, mode,
+                                  precomputed_features=candidate_features)
+            score = _daily_mean(result)
+            if score > best_score:
+                best_score = score
+                best = (fast, slow, float(threshold))
+    return best if best is not None else (EMA_PAIRS[0][0], EMA_PAIRS[0][1], 0.0)
 
-    for asset in ASSETS:
-        wfa_results[asset] = {}
-        baseline_results[asset] = {}
-        regime_results[asset] = {}
-        
-        for tf in TIMEFRAMES:
-            df: pd.DataFrame = data_store.get(asset, {}).get(tf)
 
-            if df is None or len(df) < 100:
-                log.warning(f"Insufficient data for {asset} on {tf}. Skipping.")
+def _combine(results: List[Dict[str, Any]], fast: int = 0, slow: int = 0,
+             threshold: float = 0.0, mode: str = "combined") -> Dict[str, Any]:
+    ledgers = [r["bar_returns"] for r in results if not r["bar_returns"].empty]
+    if not ledgers:
+        return metrics_from_ledger(pd.DataFrame(columns=["position", "gross_return", "turnover",
+            "commission", "slippage", "net_return", "equity", "drawdown"]), [],
+            INITIAL_EQUITY, fast, slow, threshold, mode)
+    ledger = pd.concat(ledgers).sort_index()
+    ledger = ledger[~ledger.index.duplicated(keep="first")].copy()
+    ledger["equity"] = INITIAL_EQUITY * (1.0 + ledger["net_return"]).cumprod()
+    ledger["drawdown"] = ledger["equity"] / ledger["equity"].cummax() - 1.0
+    trades = [t for r in results for t in r["trades"]]
+    return metrics_from_ledger(ledger, trades, INITIAL_EQUITY,
+                               fast, slow, threshold, mode)
+
+
+def run_walk_forward_analysis(data_store: Dict[str, Dict[str, pd.DataFrame]]) -> Dict[str, Any]:
+    wfa: Dict[str, Any] = {}
+    baselines: Dict[str, Any] = {}
+    ablations: Dict[str, Any] = {}
+    normalizations: Dict[str, Any] = {}
+    regimes: Dict[str, Any] = {}
+
+    for asset, tf_data in data_store.items():
+        wfa[asset], baselines[asset], ablations[asset] = {}, {}, {}
+        normalizations[asset], regimes[asset] = {}, {}
+        for timeframe, df in tf_data.items():
+            if df is None or len(df) < 250:
                 continue
+            df = df.sort_index()
+            fold_records: List[Dict[str, Any]] = []
+            model_runs: Dict[str, List[Dict[str, Any]]] = {m: [] for m in MODELS}
+            candidate_runs: Dict[str, List[Dict[str, Any]]] = {
+                f"ema_{f}_{s}_threshold_{threshold:g}": []
+                for f, s in EMA_PAIRS for threshold in ANGLE_THRESHOLDS}
+            ablation_runs = {m: [] for m in ("standard", "norm_slope_fast", "norm_angle")}
 
-            split_idx = int(len(df) * WFA_TRAIN_SPLIT)
-            df_is = df.iloc[:split_idx]
-            df_oos = df.iloc[split_idx:]
-            
-            # --- WFA: Optimize on In-Sample (norm_angle only for optimization phase) ---
-            is_results = run_grid_search_on_slice(df_is, "norm_angle")
-            best_param = select_best_parameter(is_results, RANK_METRIC)
-            
-            if best_param is None:
-                continue
-                
-            fast, slow, threshold = best_param
-            
-            # --- WFA: Test on Out-of-Sample ---
-            oos_metrics = run_backtest(
-                df_oos, fast, slow, threshold, INITIAL_EQUITY,
-                COMMISSION_PCT, SLIPPAGE_PCT, FIXED_COMMISSION, "norm_angle"
-            )
-            
-            wfa_results[asset][tf] = {
-                "in_sample_best_param": best_param,
-                "in_sample_metrics": is_results[best_param],
-                "out_of_sample_metrics": oos_metrics
-            }
-            
-            # --- Regimes ---
-            regime = detect_regime(df_oos)
-            regime_results[asset][tf] = {
-                "regime": regime,
-                "metrics": oos_metrics
-            }
-            
-            # --- Baselines ---
-            baseline_results[asset][tf] = {}
-            for mode in BASELINES:
-                # We test baselines on the OOS set using the SAME fast/slow parameters, 
-                # but with appropriate arbitrary thresholds for ROC and MACD (just using 0 for simplicity if not grid searched)
-                base_thresh = 0.0 if mode in ["macd", "linreg", "standard"] else threshold
-                base_metrics = run_backtest(
-                    df_oos, fast, slow, base_thresh, INITIAL_EQUITY,
-                    COMMISSION_PCT, SLIPPAGE_PCT, FIXED_COMMISSION, mode
-                )
-                baseline_results[asset][tf][mode] = base_metrics
+            for fold_id, (train_fraction, test_fraction) in enumerate(FOLDS, 1):
+                train_end = int(len(df) * train_fraction)
+                test_end = int(len(df) * test_fraction)
+                train = df.iloc[:train_end]
+                test_start_ts = df.index[train_end]
+                test_end_ts = df.index[test_end - 1]
+                selected: Dict[str, Tuple[int, int, float]] = {}
+                for mode in MODELS:
+                    param = select_model(train, mode)
+                    selected[mode] = param
+                    f, s, threshold = param
+                    model_runs[mode].append(run_backtest(
+                        df.iloc[:test_end], f, s, threshold, INITIAL_EQUITY,
+                        COMMISSION_PCT, SLIPPAGE_PCT, FIXED_COMMISSION, mode,
+                        execution_start=test_start_ts, execution_end=test_end_ts))
 
-            completed += 1
-            log.info(f"WFA Progress: {completed}/{total_iterations} iterations complete.")
+                # Complete fixed 10 x 12 candidate universe.  Each candidate is
+                # evaluated only on the same held-out blocks as the selected model.
+                for f, s in EMA_PAIRS:
+                    for threshold in ANGLE_THRESHOLDS:
+                        key = f"ema_{f}_{s}_threshold_{threshold:g}"
+                        candidate_runs[key].append(run_backtest(
+                            df.iloc[:test_end], f, s, threshold, INITIAL_EQUITY,
+                            COMMISSION_PCT, SLIPPAGE_PCT, FIXED_COMMISSION, "norm_angle",
+                            execution_start=test_start_ts, execution_end=test_end_ts))
 
-    log.info(f"WFA Sweep Complete.")
-    return {
-        "wfa": wfa_results,
-        "baselines": baseline_results,
-        "regimes": regime_results
-    }
+                pf, ps, pt = selected["norm_angle"]
+                for mode in ablation_runs:
+                    threshold = pt if mode != "standard" else 0.0
+                    ablation_runs[mode].append(run_backtest(
+                        df.iloc[:test_end], pf, ps, threshold, INITIAL_EQUITY,
+                        COMMISSION_PCT, SLIPPAGE_PCT, FIXED_COMMISSION, mode,
+                        execution_start=test_start_ts, execution_end=test_end_ts))
+                fold_records.append({"fold": fold_id, "train_end": train.index[-1],
+                                     "test_start": test_start_ts, "test_end": test_end_ts,
+                                     "selected": selected})
+
+            combined = {mode: _combine(runs, mode=mode) for mode, runs in model_runs.items()}
+            combined_ablation = {mode: _combine(runs, mode=f"ablation_{mode}")
+                                 for mode, runs in ablation_runs.items()}
+            combined_candidates = {key: _combine(runs, mode=key)
+                                   for key, runs in candidate_runs.items()}
+            wfa[asset][timeframe] = {"folds": fold_records,
+                "out_of_sample_metrics": combined["norm_angle"],
+                "candidate_universe": combined_candidates}
+            baselines[asset][timeframe] = {m: combined[m] for m in
+                ("standard", "roc", "macd", "tsmom", "buy_hold")}
+            normalizations[asset][timeframe] = {m: combined[m] for m in
+                ("norm_angle", "log_velocity", "vol_scaled")}
+            ablations[asset][timeframe] = combined_ablation
+            test_slice = df.iloc[int(len(df) * 0.5):]
+            regimes[asset][timeframe] = {"regime": detect_regime(test_slice),
+                "metrics": combined["norm_angle"]}
+            log.info("Completed anchored WFA: %s %s", asset, timeframe)
+    return {"wfa": wfa, "baselines": baselines, "ablations": ablations,
+            "normalizations": normalizations, "regimes": regimes}
 
 
-def build_wfa_ranking_table(wfa_results: Dict[str, Dict[str, Dict[str, Any]]]) -> pd.DataFrame:
-    rows: List[Dict[str, Any]] = []
-
-    for asset, tf_dict in wfa_results.items():
-        for tf, data in tf_dict.items():
-            best_param = data.get("in_sample_best_param")
-            if not best_param:
-                continue
-                
-            f, s, thr = best_param
-            oos = data.get("out_of_sample_metrics", {})
-            
-            rows.append({
-                "Market": asset,
-                "Timeframe": tf,
-                "IS Best EMA": f"EMA({f},{s})",
-                "IS Best Threshold": thr,
-                "OOS Trades": oos.get("total_trades", 0),
-                "OOS Win Rate (%)": oos.get("win_rate", 0.0),
-                "OOS Net Profit ($)": oos.get("total_net_profit", 0.0),
-                "OOS Profit Factor": oos.get("profit_factor", 0.0),
-                "OOS Sharpe": oos.get("sharpe_ratio", 0.0),
-                "OOS Max Drawdown (%)": oos.get("max_drawdown", 0.0),
-            })
-
-    df: pd.DataFrame = pd.DataFrame(rows)
-    return df
-
-def build_baseline_comparison_table(baseline_results: Dict[str, Dict[str, Dict[str, Any]]]) -> pd.DataFrame:
+def build_wfa_ranking_table(wfa_results: Dict[str, Any]) -> pd.DataFrame:
     rows = []
-    for asset, tf_dict in baseline_results.items():
-        for tf, modes in tf_dict.items():
-            for mode, m in modes.items():
-                rows.append({
-                    "Market": asset,
-                    "Timeframe": tf,
-                    "Baseline Mode": mode,
-                    "Trades": m.get("total_trades", 0),
-                    "Win Rate (%)": m.get("win_rate", 0.0),
-                    "Net Profit ($)": m.get("total_net_profit", 0.0),
-                    "Sharpe Ratio": m.get("sharpe_ratio", 0.0),
-                })
+    for asset, timeframes in wfa_results.items():
+        for tf, data in timeframes.items():
+            m = data["out_of_sample_metrics"]
+            rows.append({"Market": asset, "Timeframe": tf, "Folds": len(data["folds"]),
+                "OOS Trades": m["total_trades"], "OOS Win Rate (%)": m["win_rate"],
+                "OOS Net Profit ($)": m["total_net_profit"], "OOS Sharpe": m["sharpe_ratio"],
+                "OOS Max Drawdown (%)": m["max_drawdown"], "OOS Turnover": m["total_turnover"],
+                "OOS Exposure (%)": m["exposure_pct"]})
     return pd.DataFrame(rows)
+
+
+def build_baseline_comparison_table(baseline_results: Dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    for asset, timeframes in baseline_results.items():
+        for tf, modes in timeframes.items():
+            for mode, m in modes.items():
+                rows.append({"Market": asset, "Timeframe": tf, "Model": mode,
+                    "Trades": m["total_trades"], "Win Rate (%)": m["win_rate"],
+                    "Net Profit ($)": m["total_net_profit"], "Daily Sharpe": m["sharpe_ratio"],
+                    "Max Drawdown (%)": m["max_drawdown"], "Turnover": m["total_turnover"],
+                    "Exposure (%)": m["exposure_pct"]})
+    return pd.DataFrame(rows)
+
+
+def build_model_table(results: Dict[str, Any]) -> pd.DataFrame:
+    return build_baseline_comparison_table(results)

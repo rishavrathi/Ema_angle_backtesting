@@ -1,0 +1,2 @@
+Excluded,Series Included,OOS Days,Mean Daily Return Difference,Median Difference,CI 2.5%,CI 97.5%,Bootstrap P-Value,Probability Difference Positive
+Silver_1h and all descriptive 1m series,8,365,0.00020328802642780616,5.551115123125783e-17,-0.00022903105238572123,0.0007023325206687599,0.1835,0.8029014507253627

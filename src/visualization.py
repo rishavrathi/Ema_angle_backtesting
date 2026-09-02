@@ -73,7 +73,7 @@ def _get_best_key(results_cell: Dict[Any, Dict[str, Any]]) -> Optional[tuple]:
     """Identifies the parameter set yielding the highest total profit."""
     if not results_cell:
         return None
-    return max(results_cell.keys(), key=lambda k: results_cell[k].get("total_profit", -float('inf')))
+    return max(results_cell.keys(), key=lambda k: results_cell[k].get("total_net_profit", -float('inf')))
 
 
 def plot_price_ema_entries(
@@ -154,7 +154,7 @@ def plot_equity_curve(
     dates = [trades[0]["entry_date"]]
 
     for t in trades:
-        eq.append(eq[-1] + t["pnl"])
+        eq.append(eq[-1] + t["net_pnl"])
         dates.append(t["exit_date"])
 
     fig, ax = plt.subplots(figsize=(10, 4))

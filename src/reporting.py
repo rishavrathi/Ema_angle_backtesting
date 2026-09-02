@@ -7,16 +7,18 @@ strict reproducibility standards.
 """
 
 import json
+import hashlib
 import logging
 import platform
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 
 from .config import (
     ASSETS, TIMEFRAMES, EMA_PAIRS, ANGLE_THRESHOLDS,
-    INITIAL_EQUITY, RESULT_LOGS_DIR
+    INITIAL_EQUITY, RESULT_LOGS_DIR, RESULT_ROOT, CONFIG_FILE, DATA_RAW_DIR
 )
 
 log = logging.getLogger(__name__)
@@ -24,6 +26,18 @@ log = logging.getLogger(__name__)
 
 def generate_experiment_metadata() -> None:
     """Captures the system state, dependency versions, and parameter sets."""
+    def digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    data_hashes = {p.name: digest(p) for p in sorted(DATA_RAW_DIR.glob("*.csv"))}
+    result_hashes = {str(p.relative_to(RESULT_ROOT)): digest(p)
+                     for p in sorted(RESULT_ROOT.rglob("*"))
+                     if p.is_file() and p.name != "experiment_metadata.json"}
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=CONFIG_FILE.parent.parent,
+            text=True).strip()
+    except Exception:
+        commit = "Unavailable"
     meta: Dict[str, Any] = {
         "execution_timestamp": datetime.now().isoformat(),
         "environment": {
@@ -38,12 +52,17 @@ def generate_experiment_metadata() -> None:
             "ema_pairs": [f"({f},{s})" for f, s in EMA_PAIRS],
             "angle_thresholds": ANGLE_THRESHOLDS,
             "total_combinations": len(ASSETS) * len(TIMEFRAMES) * len(EMA_PAIRS) * len(ANGLE_THRESHOLDS)
-        }
+        },
+        "provenance": {"source_commit": commit, "config_sha256": digest(CONFIG_FILE),
+                       "data_sha256": data_hashes, "result_sha256": result_hashes,
+                       "random_seeds": {"stationary_bootstrap": 20260831,
+                                        "max_t_model_comparison": 20260831}}
     }
 
     # Attempt to capture pip package versions
     try:
-        pip_freeze = subprocess.check_output(["pip", "freeze"], text=True)
+        pip_freeze = subprocess.check_output(
+            [sys.executable, "-m", "pip", "freeze"], text=True)
         meta["environment"]["dependencies"] = pip_freeze.strip().split("\n")
     except Exception:
         meta["environment"]["dependencies"] = "Unavailable"
@@ -74,15 +93,15 @@ def generate_summary_report(
                     if m.get("win_rate", 0) >= 50:
                         total_fifty_plus += 1
 
-                    if m.get("total_profit", 0) > best_profit:
-                        best_profit = m["total_profit"]
+                    if m.get("total_net_profit", 0) > best_profit:
+                        best_profit = m["total_net_profit"]
                         best_overall = m
 
     report = [
-        "# Summary of Findings: EMA Angle Threshold Analysis",
+        "# Summary of Findings: Normalized EMA Momentum Analysis",
         "",
         "## Executive Summary",
-        "This empirical study investigates the impact of applying geometric angle thresholds to Exponential Moving Average (EMA) crossover strategies. By strictly requiring the fast EMA to exhibit a mathematically significant slope prior to entry, the strategy successfully mitigates the 'whipsawing' effect commonly observed in consolidating markets.",
+        "This exploratory study evaluates whether normalized EMA-momentum filters reduce low-momentum crossover participation under delayed execution and transaction costs.",
         "",
         "## Methodology",
         f"- **Initial Equity:** ${INITIAL_EQUITY:,.2f} (Zero leverage, 100% allocation)",
@@ -93,7 +112,7 @@ def generate_summary_report(
         "",
         "## Statistical Findings",
         f"Out of the total combinations tested, **{total_valid}** generated active trading signals.",
-        f"By holding trades until a structural EMA crossover exit occurred, **{total_fifty_plus}** unique parameter combinations achieved a win rate of $\\geq$ 50%. This demonstrates that vector-based slope confirmation significantly enhances traditional trend-following accuracy.",
+        f"Among active configurations, **{total_fifty_plus}** achieved a win rate of $\\geq$ 50%. This descriptive count is not evidence of statistical superiority.",
         "",
         "### Top Performing Configuration",
     ]
@@ -102,7 +121,7 @@ def generate_summary_report(
         report.extend([
             f"- **Market:** {best_overall.get('ema_pair')} on {best_overall.get('angle_threshold')}° threshold",
             f"- **Win Rate:** {best_overall.get('win_rate', 0)}%",
-            f"- **Total Profit:** ${best_overall.get('total_profit', 0):,.2f}",
+            f"- **Total Profit:** ${best_overall.get('total_net_profit', 0):,.2f}",
             f"- **Sharpe Ratio:** {best_overall.get('sharpe_ratio', 0)}",
             f"- **Maximum Drawdown:** {best_overall.get('max_drawdown', 0)}%"
         ])
@@ -113,7 +132,7 @@ def generate_summary_report(
     report.extend([
         "",
         "## Conclusion",
-        "The integration of trigonometric momentum filters objectively isolates high-velocity trends. While aggressive thresholds drastically limit trade frequency, they produce a robust framework for capital-efficient, high-accuracy algorithmic execution.",
+        "Results must be interpreted from synchronized out-of-sample returns and dependence-aware inference; no universal profitability claim is made.",
         "",
         "---\n*Generated by the EMA Angle Backtesting Engine.*"
     ])

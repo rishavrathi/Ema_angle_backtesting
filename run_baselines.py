@@ -76,20 +76,22 @@ def compare_baselines():
             
             for fast, slow in EMA_PAIRS:
                 # Baseline: 0 degree
-                res_base = run_backtest(df, fast, slow, 0.0, 10000.0)
+                res_base = run_backtest(df, fast, slow, 0.0, 10000.0,
+                                        baseline_mode="standard")
                 # Treatment: 0.05 degree
-                res_treat = run_backtest(df, fast, slow, 0.05, 10000.0)
+                res_treat = run_backtest(df, fast, slow, 0.05, 10000.0,
+                                         baseline_mode="norm_angle")
                 
                 if res_base['total_trades'] > 0 and res_treat['total_trades'] > 0:
                     baseline_metrics.append({
                         "Win Rate": res_base['win_rate'],
-                        "Net Profit": res_base['total_profit'],
+                        "Net Profit": res_base['total_net_profit'],
                         "Sharpe Ratio": res_base['sharpe_ratio'],
                         "Max Drawdown": res_base['max_drawdown']
                     })
                     treatment_metrics.append({
                         "Win Rate": res_treat['win_rate'],
-                        "Net Profit": res_treat['total_profit'],
+                        "Net Profit": res_treat['total_net_profit'],
                         "Sharpe Ratio": res_treat['sharpe_ratio'],
                         "Max Drawdown": res_treat['max_drawdown']
                     })

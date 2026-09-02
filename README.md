@@ -1,130 +1,84 @@
-# EMA Angle Backtesting Engine (Academic Release)
+# Normalized EMA Momentum — Exploratory Backtesting
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Status](https://img.shields.io/badge/Status-Publication_Ready-success.svg)]()
+[![CI](https://github.com/aassiiss/EMA-Angle-Optimization/actions/workflows/tests.yml/badge.svg)](https://github.com/aassiiss/EMA-Angle-Optimization/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-This repository contains the source code for the quantitative backtesting framework used to evaluate **Exponential Moving Average (EMA) Angle Thresholds**. The project demonstrates that calculating the geometric vector (angle) of moving averages significantly improves the accuracy of trend-following strategies across various asset classes by filtering out horizontal, consolidating markets.
+This repository evaluates whether normalized EMA-momentum filters reduce
+low-momentum crossover participation under delayed execution and transaction
+costs. Current results are mixed and should be interpreted as exploratory.
 
-## Project Overview
+The experiment compares percentage EMA change (price-scale normalization), log EMA
+change per elapsed hour (time-frequency normalization), and log EMA change divided
+by trailing return volatility. It also includes controlled ablations and
+independently optimized standard EMA, ROC, MACD, time-series-momentum, and
+buy-and-hold baselines.
 
-Standard EMA crossovers suffer from severe "whipsawing" during periods of market consolidation. By calculating the arctangent of the EMA differential, this engine converts price momentum into a measurable degree angle ($\theta = \arctan(EMA_t - EMA_{t-1})$). 
+## Accounting model
 
-The strategy requires a dual-filter confirmation:
-1. Directional alignment of a Fast and Slow EMA.
-2. The Fast EMA angle must exceed a specific mathematical threshold.
-3. The Slow EMA angle must confirm the macro trend direction.
+All assets use fully collateralized, continuously divisible synthetic 1x exposure.
+Gold (`GC=F`) and silver (`SI=F`) results are **not directly executable CME futures
+performance**: contract multipliers, integer contracts, margin, contract-specific
+fees, and independent rollover handling are outside the model. Commission and
+slippage are assessed on every position change. Equity is marked to market on every
+bar and reconciles exactly to compounded net returns.
 
-By evaluating 1,440 unique combinations of Assets, Timeframes, EMA Pairs, and Angle Thresholds, this framework empirically proves that steep angle requirements drastically reduce trade frequency while maximizing the probability of identifying a high-velocity trend.
+## Validation design
 
-## Repository Structure
+| Fold | Training | Testing |
+|---|---:|---:|
+| 1 | first 50% | next 10% |
+| 2 | first 60% | next 10% |
+| 3 | first 70% | next 10% |
+| 4 | first 80% | next 10% |
+| 5 | first 90% | final 10% |
 
-```text
-EMA_Angle_Optimization/
-│
-├── README.md               # Project overview and instructions
-├── LICENSE                 # MIT License
-├── requirements.txt        # Python dependency list
-├── CITATION.cff            # Academic citation format
-├── VERSION                 # Software versioning
-│
-├── config/
-│   └── config.yaml         # Central configuration for all parameters
-│
-├── src/                    # Core Analytical Source Code
-│   ├── indicators.py       # Mathematical EMA and vector angle logic
-│   ├── strategy.py         # Signal generation logic
-│   ├── backtest.py         # O(1) vectorized execution engine
-│   ├── optimizer.py        # Grid search and combination sweeping
-│   ├── visualization.py    # Publication-quality figure generation (300 DPI)
-│   ├── export_excel.py     # Academic formatting for Excel results
-│   ├── data_loader.py      # Historical OHLCV fetching via Yahoo Finance
-│   └── reporting.py        # Metadata and Summary generation
-│
-├── tests/                  # Automated pytest Suite
-│   └── test_core.py        # Validation of indicator math and execution logic
-│
-├── data/                   # Data Storage
-│   └── raw/                # Cached OHLCV historical CSV files
-│
-├── results/                # Output Artifacts (Generated at runtime)
-│   ├── excel/              # Detailed performance metrics per parameter set
-│   ├── figures/            # Equity curves and trade execution plots
-│   └── logs/               # Execution logs and environment metadata
-│
-└── main.py                 # The singular entry point pipeline
-```
+Each model is selected on training data only. Prior bars remain available for EMA
+warm-up, while execution is prohibited before each test block. Test-block returns
+are concatenated into synchronized out-of-sample series.
 
-## Installation and Setup
+Inference uses stationary-bootstrap confidence intervals and p-values on daily
+return differences, Holm correction across asset-frequency tests, and a
+stationary-bootstrap max-t model-comparison diagnostic over the complete fixed
+120-candidate universe. This diagnostic is not labeled as Hansen's SPA test.
 
-This framework is built strictly with open-source dependencies.
+The one-minute datasets span too few distinct days for defensible daily
+time-series inference. They are retained as descriptive walk-forward results but
+excluded from confidence intervals, p-values, multiple-testing adjustment, and
+aggregate inference; missing inference is never replaced by zero.
 
-### 1. Clone the Repository
+## Reproduce
+
 ```bash
-git clone https://github.com/your-username/EMA_Angle_Optimization.git
-cd EMA_Angle_Optimization
-```
-
-### 2. Create a Virtual Environment (Optional but Recommended)
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows use: venv\Scripts\activate
-```
-
-### 3. Install Dependencies
-```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-## How to Reproduce the Experiments
-
-This repository is designed for full reproducibility. All execution logic is entirely deterministic (zero look-ahead bias, fixed T+1 execution logic).
-
-To run the full 1,440 combination backtest grid:
-
-```bash
+pytest -q
 python main.py
+python audit_verification.py
 ```
 
-### What to Expect:
-1. **Data Acquisition:** The engine will download historical tick data for Gold (GC=F), Silver (SI=F), and Bitcoin (BTC-USD) and cache it in `data/raw/`.
-2. **Execution:** The backtest engine evaluates every parameter defined in `config/config.yaml`.
-3. **Outputs:** The engine populates the `results/` directory with empirical data, high-resolution figures, and an execution log.
+Cached Yahoo Finance OHLCV files are stored under `data/`. Generated synchronized
+returns and summary tables are written under `results/`.
 
-## Outputs Generated
+## Important outputs
 
-Upon completion, you will find the following artifacts:
-- `results/excel/EMA_Angle_Empirical_Results.xlsx`: The raw statistical breakdown, heavily filtered to highlight statistically significant combinations (Win Rate >= 50%).
-- `results/figures/*.png`: 300 DPI charts showing Equity Curves and Price Execution trajectories for the highest-performing configurations.
-- `results/logs/experiment_metadata.json`: A detailed capture of your operating system, Python environment, and exact parameter sets to guarantee peer reproducibility.
-- `paper/Summary_of_Findings.md`: A formal writeup detailing the methodology, execution, and statistical findings of the run.
+- `results/final_walk_forward/bar_returns/`: timestamped position, return, cost,
+  equity, and drawdown ledgers;
+- `results/final_walk_forward/csvs/`: OOS summaries, baselines, ablations,
+  normalization comparisons, inference, tail risk, cost sensitivity, and the
+  leave-Silver-1h-out aggregate;
+- `results/final_walk_forward/logs/experiment_metadata.json`: configuration,
+  data, result hashes, source commit, dependency versions, and random seeds;
+- `results/legacy_invalid/`: preserved outputs produced before accounting and
+  inference hardening.
 
-## Modifying Parameters
+## Tests
 
-To evaluate new assets, alter starting capital, or expand the Angle thresholds, open `config/config.yaml` and modify the values directly. The engine dynamically maps to this file.
+The regression suite covers scale invariance, transformation equivalence,
+look-ahead isolation, entry/exit costs, long/short behavior, terminal liquidation,
+mark-to-market drawdown, equity reconciliation, fold separation, daily risk-metric
+annualization, and deterministic output hashes.
 
-```yaml
-# Example snippet from config.yaml
-strategy:
-  base_ema_values: [9, 15, 21, 50, 200]
-  angle_thresholds: [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
+## License and citation
 
-backtest:
-  initial_equity: 10000.0
-```
-
-## Automated Testing
-
-To verify the mathematical integrity of the geometric vectors and signal generation logic before running the full pipeline, execute the test suite:
-
-```bash
-pytest tests/
-```
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Citation
-
-If you utilize this backtesting engine or the geometric angle methodology in your academic research, please cite this repository using the provided `CITATION.cff` file.
+Released under the MIT License. Citation metadata is provided in `CITATION.cff`.

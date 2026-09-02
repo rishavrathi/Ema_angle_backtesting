@@ -1,117 +1,143 @@
-"""
-statistical_tests.py — Advanced Statistical Validation Module.
+"""Dependence-aware inference on synchronized out-of-sample return series."""
+from __future__ import annotations
 
-Computes Wilcoxon Signed-Rank Test, Cliff's Delta, Rank-Biserial Correlation,
-and Effect Size Confidence Intervals for paired backtest samples.
-"""
+from typing import Any, Dict
 import numpy as np
 import pandas as pd
-from scipy.stats import wilcoxon
 
 
-def cliffs_delta(lst1, lst2):
-    """
-    Computes Cliff's Delta for two paired or independent samples.
-    Measures the probability that a randomly selected observation from one group
-    is larger than a randomly selected observation from another group.
-    """
-    m, n = len(lst1), len(lst2)
-    if m == 0 or n == 0:
-        return 0.0
-    
-    mat = np.sign(np.subtract.outer(lst1, lst2))
-    return np.sum(mat) / (m * n)
+def stationary_bootstrap_indices(n: int, expected_block: float,
+                                 rng: np.random.Generator) -> np.ndarray:
+    """Politis--Romano stationary-bootstrap indices."""
+    if n <= 0:
+        return np.array([], dtype=int)
+    restart_probability = 1.0 / expected_block
+    out = np.empty(n, dtype=int)
+    out[0] = rng.integers(n)
+    for i in range(1, n):
+        out[i] = rng.integers(n) if rng.random() < restart_probability else (out[i - 1] + 1) % n
+    return out
 
 
-def rank_biserial_correlation(x, y):
-    """
-    Approximates Rank-Biserial Correlation for paired samples 
-    using the Wilcoxon statistic.
-    """
-    if len(x) == 0 or len(y) == 0 or len(x) != len(y):
-        return 0.0
-        
-    diffs = np.array(x) - np.array(y)
-    diffs = diffs[diffs != 0] # exclude ties
-    n = len(diffs)
-    
-    if n == 0:
-        return 0.0
-        
-    try:
-        w_stat, _ = wilcoxon(x, y, zero_method="pratt")
-        # Formula for rank-biserial from Wilcoxon W
-        # r = 1 - (4W) / (n(n+1))
-        # Wait, standard formula: r_c = 4W / (n(n+1)) - 1
-        expected_w = (n * (n + 1)) / 4.0
-        r = (w_stat - expected_w) / expected_w
-        return -r # Negative sign adjustment depending on library convention
-    except Exception:
-        return 0.0
+def _daily_returns(metrics: Dict[str, Any]) -> pd.Series:
+    ledger = metrics["bar_returns"]
+    if ledger.empty:
+        return pd.Series(dtype=float)
+    return ledger["equity"].resample("1D").last().pct_change().dropna()
 
-def evaluate_significance(baseline_profits, filtered_profits):
-    """
-    Runs full statistical suite on paired results.
-    """
-    if len(baseline_profits) < 5 or len(filtered_profits) < 5:
-        return {"error": "Insufficient data"}
-        
-    try:
-        stat, p_val = wilcoxon(baseline_profits, filtered_profits)
-        cd = cliffs_delta(filtered_profits, baseline_profits)
-        rbc = rank_biserial_correlation(baseline_profits, filtered_profits)
-        
-        return {
-            "wilcoxon_stat": float(stat),
-            "p_value": float(p_val),
-            "cliffs_delta": float(cd),
-            "rank_biserial": float(rbc),
-            "n_pairs": len(baseline_profits),
-            "mean_diff": float(np.mean(filtered_profits) - np.mean(baseline_profits))
-        }
-    except Exception as e:
-        return {"error": str(e)}
 
-def run_statistical_suite(baseline_results: dict, wfa_results: dict) -> pd.DataFrame:
-    """
-    Pairs the OOS results of the Normalized Angle filter with the OOS results 
-    of the Standard Baseline, testing for statistical significance.
-    """
+def stationary_bootstrap_test(difference: pd.Series, replications: int = 1999,
+                              expected_block: float = 5.0,
+                              seed: int = 20260831) -> Dict[str, float]:
+    values = difference.dropna().to_numpy(dtype=float)
+    n = len(values)
+    if n < 5:
+        return {"mean": np.nan, "median": np.nan, "ci_low": np.nan,
+                "ci_high": np.nan, "p_value": np.nan,
+                "probability_positive": np.nan, "n": n}
+    rng = np.random.default_rng(seed)
+    boot_means = np.empty(replications)
+    centered_means = np.empty(replications)
+    centered = values - values.mean()
+    for b in range(replications):
+        idx = stationary_bootstrap_indices(n, expected_block, rng)
+        boot_means[b] = values[idx].mean()
+        centered_means[b] = centered[idx].mean()
+    observed = float(values.mean())
+    return {"mean": observed, "median": float(np.median(values)),
+            "ci_low": float(np.quantile(boot_means, 0.025)),
+            "ci_high": float(np.quantile(boot_means, 0.975)),
+            "p_value": float((1 + np.sum(centered_means >= observed)) / (replications + 1)),
+            "probability_positive": float(np.mean(boot_means > 0)), "n": n}
+
+
+def holm_adjust(p_values: pd.Series) -> pd.Series:
+    valid = p_values.dropna().sort_values()
+    adjusted = pd.Series(np.nan, index=p_values.index, dtype=float)
+    running = 0.0
+    m = len(valid)
+    for rank, (idx, p_value) in enumerate(valid.items()):
+        running = max(running, (m - rank) * float(p_value))
+        adjusted.loc[idx] = min(running, 1.0)
+    return adjusted
+
+
+def max_t_model_comparison_p_value(models: Dict[str, Dict[str, Any]], benchmark: Dict[str, Any],
+                                   replications: int = 999, expected_block: float = 5.0,
+                                   seed: int = 20260831) -> float:
+    """Stationary-bootstrap max-t diagnostic; this is not Hansen's SPA test."""
+    benchmark_daily = _daily_returns(benchmark).rename("benchmark")
+    columns = []
+    for name, metrics in models.items():
+        if name == "standard":
+            continue
+        aligned = pd.concat([_daily_returns(metrics).rename(name), benchmark_daily], axis=1).dropna()
+        if len(aligned) >= 5:
+            columns.append((name, aligned[name] - aligned["benchmark"]))
+    if not columns:
+        return np.nan
+    matrix = pd.concat(dict(columns), axis=1).dropna().to_numpy(dtype=float)
+    if len(matrix) < 5:
+        return np.nan
+    scale = matrix.std(axis=0, ddof=1)
+    scale[scale == 0] = np.inf
+    observed = float(np.max(np.sqrt(len(matrix)) * matrix.mean(axis=0) / scale))
+    centered = matrix - matrix.mean(axis=0)
+    rng = np.random.default_rng(seed)
+    exceed = 0
+    for _ in range(replications):
+        idx = stationary_bootstrap_indices(len(matrix), expected_block, rng)
+        statistic = float(np.max(np.sqrt(len(matrix)) * centered[idx].mean(axis=0) / scale))
+        exceed += statistic >= observed
+    return float((exceed + 1) / (replications + 1))
+
+
+def run_statistical_suite(baseline_results: Dict[str, Any], wfa_results: Dict[str, Any],
+                          normalization_results: Dict[str, Any] | None = None) -> pd.DataFrame:
     rows = []
-    
-    for asset, tf_dict in wfa_results.items():
-        for tf, data in tf_dict.items():
-            oos_filtered = data.get("out_of_sample_metrics", {})
-            baseline_data = baseline_results.get(asset, {}).get(tf, {}).get("standard", {})
-            
-            # Since these are single metrics for the whole OOS period, 
-            # we need trade-by-trade pairings to run Wilcoxon.
-            filtered_trades = [t["net_pnl"] for t in oos_filtered.get("trades", [])]
-            baseline_trades = [t["net_pnl"] for t in baseline_data.get("trades", [])]
-            
-            # Pad the shorter one with zeros (or just trim to minimum length for paired testing)
-            # Actually, standard paired testing requires matched pairs. If a trade didn't happen, it's 0 PnL for that day.
-            # To simplify, we will just compare the distributions using Cliff's Delta, and Wilcoxon on the matched length
-            
-            min_len = min(len(filtered_trades), len(baseline_trades))
-            if min_len < 5:
+    for asset, timeframes in wfa_results.items():
+        for tf, proposed_data in timeframes.items():
+            # Intraday one-minute histories span too few distinct days for
+            # dependence-aware daily inference. They remain descriptive outputs.
+            if tf == "1m":
                 continue
-                
-            f_matched = filtered_trades[:min_len]
-            b_matched = baseline_trades[:min_len]
-            
-            stats = evaluate_significance(b_matched, f_matched)
-            
-            if "error" not in stats:
-                rows.append({
-                    "Asset": asset,
-                    "Timeframe": tf,
-                    "Wilcoxon W": stats["wilcoxon_stat"],
-                    "P-Value": stats["p_value"],
-                    "Cliff's Delta": stats["cliffs_delta"],
-                    "Rank-Biserial": stats["rank_biserial"],
-                    "Mean PnL Diff": stats["mean_diff"],
-                    "Sample Size": stats["n_pairs"]
-                })
-                
-    return pd.DataFrame(rows)
+            proposed = proposed_data["out_of_sample_metrics"]
+            standard = baseline_results[asset][tf]["standard"]
+            aligned = pd.concat([_daily_returns(proposed).rename("filtered"),
+                                 _daily_returns(standard).rename("standard")], axis=1).dropna()
+            result = stationary_bootstrap_test(aligned["filtered"] - aligned["standard"])
+            universe = proposed_data["candidate_universe"]
+            rows.append({"Asset": asset, "Timeframe": tf,
+                "Mean Daily Return Difference": result["mean"],
+                "Median Difference": result["median"], "CI 2.5%": result["ci_low"],
+                "CI 97.5%": result["ci_high"], "Bootstrap P-Value": result["p_value"],
+                "Probability Difference Positive": result["probability_positive"],
+                "OOS Days": result["n"],
+                "Max-t Model-Comparison P-Value": max_t_model_comparison_p_value(
+                    universe, standard)})
+    frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame["Holm-Adjusted P-Value"] = holm_adjust(frame["Bootstrap P-Value"])
+    return frame
+
+
+def leave_silver_1h_out_aggregate(baseline_results: Dict[str, Any],
+                                  wfa_results: Dict[str, Any]) -> pd.DataFrame:
+    """Equal-weight daily aggregate excluding descriptive 1m and Silver 1h."""
+    differences = []
+    for asset, timeframes in wfa_results.items():
+        for tf, proposed_data in timeframes.items():
+            if tf == "1m" or (asset == "Silver" and tf == "1h"):
+                continue
+            proposed = _daily_returns(proposed_data["out_of_sample_metrics"])
+            standard = _daily_returns(baseline_results[asset][tf]["standard"])
+            differences.append((proposed - standard).rename(f"{asset}_{tf}"))
+    panel = pd.concat(differences, axis=1)
+    aggregate = panel.mean(axis=1, skipna=True).dropna()
+    result = stationary_bootstrap_test(aggregate)
+    return pd.DataFrame([{"Excluded": "Silver_1h and all descriptive 1m series",
+        "Series Included": len(differences), "OOS Days": result["n"],
+        "Mean Daily Return Difference": result["mean"],
+        "Median Difference": result["median"], "CI 2.5%": result["ci_low"],
+        "CI 97.5%": result["ci_high"], "Bootstrap P-Value": result["p_value"],
+        "Probability Difference Positive": result["probability_positive"]}])

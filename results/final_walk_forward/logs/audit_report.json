@@ -1,0 +1,7 @@
+{
+  "datasets_checked": 12,
+  "discrepancies": [],
+  "generated_ledgers_checked": 96,
+  "max_final_equity_reconciliation_error": 2.142769517377019e-09,
+  "status": "Pass"
+}

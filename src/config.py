@@ -36,14 +36,15 @@ INITIAL_EQUITY: float = float(_config.get(
 COMMISSION_PCT: float = float(_config.get("backtest", {}).get("commission_pct", 0.0))
 SLIPPAGE_PCT: float = float(_config.get("backtest", {}).get("slippage_pct", 0.0))
 FIXED_COMMISSION: float = float(_config.get("backtest", {}).get("fixed_commission", 0.0))
-WFA_TRAIN_SPLIT: float = float(_config.get("backtest", {}).get("wfa_train_split", 0.7))
 BASELINES: List[str] = _config.get("backtest", {}).get("baselines", ["standard"])
 RANK_METRIC: str = _config.get("backtest", {}).get(
-    "rank_metric", "total_profit")
+    "rank_metric", "mean_daily_return")
 
 # Data & Output Directories
+RESULT_ROOT: Path = BASE_DIR / _config.get("paths", {}).get(
+    "results_root", "results/final_walk_forward")
 DATA_RAW_DIR: Path = BASE_DIR / \
-    _config.get("paths", {}).get("data_raw", "data/raw")
+    _config.get("paths", {}).get("data_raw", "data")
 DATA_PROCESSED_DIR: Path = BASE_DIR / \
     _config.get("paths", {}).get("data_processed", "data/processed")
 RESULT_EXCEL_DIR: Path = BASE_DIR / \
@@ -65,7 +66,7 @@ TOTAL_COMBOS: int = len(ASSETS) * len(TIMEFRAMES) * \
 def ensure_directories() -> None:
     """Ensures all necessary output directories exist before execution."""
     for directory in [
-        DATA_RAW_DIR, DATA_PROCESSED_DIR, RESULT_EXCEL_DIR,
+        DATA_RAW_DIR, RESULT_ROOT, DATA_PROCESSED_DIR, RESULT_EXCEL_DIR,
         RESULT_FIGS_DIR, RESULT_REPORTS_DIR, RESULT_LOGS_DIR,
         RESULT_TRADE_LOGS_DIR
     ]:

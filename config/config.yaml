@@ -28,15 +28,15 @@ backtest:
   commission_pct: 0.0005      # 5 bps per trade
   slippage_pct: 0.0005        # 5 bps slippage per trade
   fixed_commission: 0.0       # Optional fixed dollar cost
-  wfa_train_split: 0.7        # 70% IS, 30% OOS
-  baselines: ["standard", "roc", "macd", "linreg"]
-  rank_metric: "total_profit"
+  baselines: ["standard", "roc", "macd", "tsmom", "buy_hold"]
+  rank_metric: "mean_daily_return"
 
 paths:
-  data_raw: "data/raw"
-  data_processed: "data/processed"
-  results_excel: "results/excel"
-  results_figures: "results/figures"
-  results_reports: "results/reports"
-  results_logs: "results/logs"
-  results_trade_logs: "results/trade_logs"
+  results_root: "results/final_walk_forward"
+  data_raw: "data"
+  data_processed: "results/final_walk_forward/processed"
+  results_excel: "results/final_walk_forward/excel"
+  results_figures: "results/final_walk_forward/figures"
+  results_reports: "results/final_walk_forward/reports"
+  results_logs: "results/final_walk_forward/logs"
+  results_trade_logs: "results/final_walk_forward/trade_logs"

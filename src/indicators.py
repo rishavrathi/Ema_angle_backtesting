@@ -7,7 +7,6 @@ their normalized momentum properties.
 
 import numpy as np
 import pandas as pd
-from scipy.stats import linregress
 
 
 def calc_ema(series: pd.Series, period: int) -> pd.Series:
@@ -26,15 +25,6 @@ def calc_macd_hist(series: pd.Series, fast: int, slow: int, signal: int = 9) -> 
     signal_line = calc_ema(macd_line, signal)
     return macd_line - signal_line
     
-def calc_linreg_slope(series: pd.Series, period: int) -> pd.Series:
-    """Computes Rolling Linear Regression Slope."""
-    # Rolling apply is slow, but we'll use a fast numpy stride trick or rolling apply
-    def _slope(y):
-        x = np.arange(len(y))
-        return linregress(x, y)[0]
-    return series.rolling(window=period).apply(_slope, raw=True)
-
-
 def calc_normalized_angle(ema_series: pd.Series) -> pd.Series:
     """
     Computes the Normalized Angle (\theta) of the EMA trajectory in degrees.
@@ -49,7 +39,26 @@ def calc_normalized_slope(ema_series: pd.Series) -> pd.Series:
     return (ema_series - ema_series.shift(1)) / ema_series.shift(1)
 
 
-def add_ema_features(df: pd.DataFrame, fast: int, slow: int) -> pd.DataFrame:
+def calc_log_velocity(ema_series: pd.Series) -> pd.Series:
+    """Log EMA change per elapsed hour (price- and frequency-normalized)."""
+    log_change = np.log(ema_series).diff()
+    if isinstance(ema_series.index, pd.DatetimeIndex):
+        hours = ema_series.index.to_series().diff().dt.total_seconds() / 3600.0
+        hours.index = ema_series.index
+        return log_change / hours.replace(0, np.nan)
+    return log_change
+
+
+def calc_volatility_scaled_velocity(ema_series: pd.Series, price: pd.Series,
+                                    window: int = 20) -> pd.Series:
+    """One-bar log EMA change scaled by trailing price-return volatility."""
+    numerator = np.log(ema_series).diff()
+    denominator = np.log(price).diff().rolling(window, min_periods=window).std()
+    return numerator / denominator.replace(0, np.nan)
+
+
+def add_ema_features(df: pd.DataFrame, fast: int, slow: int,
+                     macd_signal: int = 9) -> pd.DataFrame:
     """
     Appends dual EMA values and their normalized angles to the OHLCV dataframe.
     """
@@ -63,13 +72,12 @@ def add_ema_features(df: pd.DataFrame, fast: int, slow: int) -> pd.DataFrame:
     
     # Baselines
     feat["norm_slope_fast"] = calc_normalized_slope(feat["ema_fast"])
+    feat["norm_slope_slow"] = calc_normalized_slope(feat["ema_slow"])
+    feat["log_velocity_fast"] = calc_log_velocity(feat["ema_fast"])
+    feat["vol_scaled_velocity_fast"] = calc_volatility_scaled_velocity(
+        feat["ema_fast"], feat["Close"])
     feat["roc_fast"] = calc_roc(feat["Close"], fast)
-    feat["macd_hist"] = calc_macd_hist(feat["Close"], fast, slow)
+    feat["macd_hist"] = calc_macd_hist(feat["Close"], fast, slow, macd_signal)
+    feat["ts_momentum"] = feat["Close"].pct_change(slow)
     
-    # We'll skip linreg rolling apply if it's too slow for massive data, but implement it here
-    # To save massive time in 1440 combos, we won't calculate linreg_slope unless needed.
-    # Let's mock linreg_slope here and just populate with 0s to avoid NaN drops for now, 
-    # unless baseline is actively running it.
-    feat["linreg_slope_fast"] = 0.0
-
     return feat

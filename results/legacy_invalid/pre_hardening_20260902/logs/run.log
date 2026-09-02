@@ -1,0 +1,44 @@
+2026-09-01 08:34:17,567 | INFO     | ======================================================================
+2026-09-01 08:34:17,568 | INFO     |   EMA Angle Strategy — Empirical Hardening (Phase 11)
+2026-09-01 08:34:17,568 | INFO     | ======================================================================
+2026-09-01 08:34:17,569 | INFO     | Experiment metadata generated: experiment_metadata.json
+2026-09-01 08:34:17,569 | INFO     | 
+[Phase 1] Acquiring Historical Market Data...
+2026-09-01 08:34:17,610 | INFO     | Loaded cached data: Gold (1m) - 6871 bars
+2026-09-01 08:34:17,660 | INFO     | Loaded cached data: Gold (5m) - 11420 bars
+2026-09-01 08:34:17,680 | INFO     | Loaded cached data: Gold (15m) - 3814 bars
+2026-09-01 08:34:17,730 | INFO     | Loaded cached data: Gold (1h) - 11383 bars
+2026-09-01 08:34:17,761 | INFO     | Loaded cached data: Silver (1m) - 6720 bars
+2026-09-01 08:34:17,810 | INFO     | Loaded cached data: Silver (5m) - 11408 bars
+2026-09-01 08:34:17,830 | INFO     | Loaded cached data: Silver (15m) - 3813 bars
+2026-09-01 08:34:17,879 | INFO     | Loaded cached data: Silver (1h) - 11380 bars
+2026-09-01 08:34:17,926 | INFO     | Loaded cached data: Bitcoin (1m) - 10073 bars
+2026-09-01 08:34:18,004 | INFO     | Loaded cached data: Bitcoin (5m) - 16969 bars
+2026-09-01 08:34:18,031 | INFO     | Loaded cached data: Bitcoin (15m) - 5658 bars
+2026-09-01 08:34:18,107 | INFO     | Loaded cached data: Bitcoin (1h) - 17439 bars
+2026-09-01 08:34:18,107 | INFO     | 
+[Phase 2] Executing Walk-Forward Optimization Engine...
+2026-09-01 08:36:57,337 | INFO     | Completed anchored WFA: Gold 1m
+2026-09-01 08:41:18,303 | INFO     | Completed anchored WFA: Gold 5m
+2026-09-01 08:42:54,440 | INFO     | Completed anchored WFA: Gold 15m
+2026-09-01 08:47:17,500 | INFO     | Completed anchored WFA: Gold 1h
+2026-09-01 08:49:51,455 | INFO     | Completed anchored WFA: Silver 1m
+2026-09-01 08:54:17,852 | INFO     | Completed anchored WFA: Silver 5m
+2026-09-01 08:55:50,929 | INFO     | Completed anchored WFA: Silver 15m
+2026-09-01 09:00:22,387 | INFO     | Completed anchored WFA: Silver 1h
+2026-09-01 09:04:14,608 | INFO     | Completed anchored WFA: Bitcoin 1m
+2026-09-01 09:10:40,362 | INFO     | Completed anchored WFA: Bitcoin 5m
+2026-09-01 09:12:51,689 | INFO     | Completed anchored WFA: Bitcoin 15m
+2026-09-01 09:19:27,695 | INFO     | Completed anchored WFA: Bitcoin 1h
+2026-09-01 09:19:27,717 | INFO     | 
+[Phase 3] Running Non-Parametric Statistical Suite...
+2026-09-01 09:19:31,399 | INFO     | 
+[Phase 4] Generating CSV Artifacts...
+2026-09-01 09:19:31,399 | INFO     |   -> Exporting Walk-Forward Results to CSV...
+2026-09-01 09:19:31,402 | INFO     |   -> Exporting Baseline Comparisons to CSV...
+2026-09-01 09:19:31,405 | INFO     |   -> Exporting Statistical Tests to CSV...
+2026-09-01 09:19:31,406 | INFO     |   -> Exporting Regime Robustness to CSV...
+2026-09-01 09:19:36,751 | INFO     | 
+======================================================================
+2026-09-01 09:19:36,751 | INFO     |   EMPIRICAL EXECUTION COMPLETE
+2026-09-01 09:19:36,751 | INFO     | ======================================================================

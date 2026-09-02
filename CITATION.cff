@@ -1,14 +1,12 @@
 cff-version: 1.2.0
 message: "If you use this software in your research, please cite it as below."
 authors:
-  - family-names: "Researcher"
-    given-names: "Quantitative"
-    affiliation: "Independent Algorithmic Research"
-title: "EMA Angle Strategy Backtesting Engine"
-version: 1.0.0
-date-released: 2024-01-01
-url: "https://github.com/your-username/EMA_Angle_Optimization"
-repository-code: "https://github.com/your-username/EMA_Angle_Optimization"
+  - name: "EMA-Angle-Optimization contributors"
+title: "Normalized EMA Momentum: Exploratory Backtesting Framework"
+version: 2.0.0
+date-released: 2026-09-01
+url: "https://github.com/aassiiss/EMA-Angle-Optimization"
+repository-code: "https://github.com/aassiiss/EMA-Angle-Optimization"
 keywords:
   - algorithmic trading
   - quantitative finance
@@ -17,4 +15,4 @@ keywords:
   - python
   - pandas
 license: MIT
-abstract: "A quantitative backtesting framework that evaluates the efficacy of applying geometric angle thresholds to Exponential Moving Average crossovers. The engine tests 1,440 parameter combinations to mathematically demonstrate that vector-based momentum filters improve trend-following win rates in financial markets."
+abstract: "An exploratory, cost-aware framework for comparing price-, time-, and volatility-normalized EMA momentum filters using anchored walk-forward validation and synchronized return inference."
