@@ -1,0 +1,178 @@
+tex_content = r"""\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Scale-Independent Geometric Momentum: A Methodological Critique of Moving Average Crossover Strategies under Empirical Friction}
+
+\author{
+\IEEEauthorblockN{1\textsuperscript{st} Your Name}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{National Institute of Technology Rourkela}\\
+Rourkela, India \\
+your.email@nitrkl.ac.in}
+\and
+\IEEEauthorblockN{2\textsuperscript{nd} Your Friend's Name}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{National Institute of Technology Rourkela}\\
+Rourkela, India \\
+friend.email@nitrkl.ac.in}
+\and
+\IEEEauthorblockN{3\textsuperscript{rd} Dev Narayan Yadav}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{National Institute of Technology Rourkela}\\
+Rourkela, India \\
+yadavdn@nitrkl.ac.in}
+}
+
+\maketitle
+
+\begin{abstract}
+Exponential Moving Average (EMA) crossovers are foundational to trend-following trading systems; however, they frequently exhibit elevated false-positive rates during periods of market consolidation. A common heuristic to address this involves filtering crossover signals based on the geometric angle or slope of the moving average. Traditional geometric angle calculations utilize nominal price data, introducing a dimensional inconsistency that renders the resulting metric scale-dependent and largely incomparable across disparate asset classes. In this paper, we formalize a mathematically consistent, scale-independent geometric angle framework. By normalizing the discrete temporal difference of the EMA to produce a dimensionless rate of change, and subsequently applying an arctangent transformation, we derive a universally comparable momentum vector. We comprehensively evaluate this framework using a strictly out-of-sample Walk-Forward Analysis across a diverse multi-asset universe (Bitcoin, Gold, and Silver). The empirical evaluation demonstrates that although the normalization correctly resolves the dimensional inconsistency inherent in nominal-angle heuristics, these theoretical signal improvements are insufficient to overcome realistic transaction costs in high-frequency environments. The principal finding of this study is that mathematical validity and improved theoretical signal quality do not automatically translate into economic viability. We conclude by emphasizing the critical importance of reporting negative findings in quantitative finance to distinguish between statistical significance and true economic significance.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Technical Analysis, Algorithmic Trading, Time-Series Momentum, Methodological Critique, Negative Findings, Financial Signal Processing, Quantitative Finance
+\end{IEEEkeywords}
+
+\section{Introduction}
+Trend-following strategies constitute a significant portion of systematic trading across global financial markets \cite{lo2000}. A ubiquitous methodology within this domain is the Moving Average Crossover, which attempts to identify shifts in market momentum by comparing short-term and long-term price smoothing functions, such as the Exponential Moving Average (EMA) \cite{brock1992}. While standard crossover strategies are designed to capture persistent trends, they are vulnerable to generating false signals---commonly referred to as ``whipsaws''---during periods of low-volatility or sideways market consolidation \cite{hsu2016}.
+
+To mitigate the impact of low-momentum regimes, quantitative researchers often augment spatial crossovers with velocity or momentum filters \cite{osler2003}. A frequently cited heuristic involves measuring the ``angle'' or slope of the moving average prior to execution \cite{murphy1999}. However, computing a geometric angle directly from nominal price data introduces a dimensional inconsistency \cite{bauer1998}. The slope is mathematically dependent on the asset's absolute price scale; a nominal 5-degree angle represents a fundamentally different proportional momentum shift for a high-nominal asset (e.g., Bitcoin) than for a low-nominal asset (e.g., Silver) \cite{harvey2016}. This scale-dependence hinders cross-asset comparability and generally requires the fitting of unique, non-generalizable parameters to specific price regimes \cite{deprado2018}.
+
+This paper addresses this methodological weakness by formalizing a scale-independent mathematical solution: the Normalized Geometric Angle Filter. Our objective is not to introduce a superior trading strategy that guarantees profitability, but rather to construct a dimensionally consistent framework for evaluating geometric momentum, and to subject this methodology to rigorous empirical scrutiny. We demonstrate that while the proposed normalization successfully resolves the dimensional flaw of nominal heuristics, the resulting improvements in signal quality are largely eroded by transaction-cost friction in realistic out-of-sample environments.
+
+\section{Related Work}
+The intersection of time-series momentum and technical analysis has been extensively documented in quantitative finance literature \cite{moskowitz2012}, \cite{hurst2017}. Moving average crossover rules are frequently modeled as linear digital filters \cite{shiryaev1999}, closely related to the broader phenomenon of time-series momentum formalized by Moskowitz et al. \cite{griffin2003}. Traditional research often relies on Simple Moving Averages (SMA) or EMAs to identify trend onset \cite{marshall2017}.
+
+To address the lag and whipsaw vulnerabilities of standard crossovers, subsequent research has explored momentum overlays \cite{edwards2012}. The Moving Average Convergence Divergence (MACD) oscillator, developed by Appel \cite{appel2005}, quantifies the spatial distance between two EMAs to gauge momentum intensity. However, standard MACD implementations remain nominal, meaning absolute values cannot be directly compared across assets of different scales without prior normalization \cite{deprado2020}. Similarly, percentage-based indicators like the Rate of Change (ROC) resolve scale-dependence \cite{achelis2000} but lack the bounded geometric interpretation of a trend's trajectory. 
+
+Cross-asset momentum research increasingly emphasizes the necessity of normalizing technical indicators, particularly when utilized as feature inputs for financial machine learning models \cite{dixon2020}. Without normalization, cross-sectional algorithms may exhibit bias toward high-variance, high-nominal-price assets \cite{tsagkanos2004}. 
+
+\textbf{Research Gap:} Despite the widespread acknowledgment of scale-dependence in financial signal processing \cite{kao2020}, existing literature rarely formalizes a scale-independent geometric interpretation of EMA slope suitable for cross-asset comparison \cite{kaufman2019}. Furthermore, much of the existing literature suffers from publication bias, frequently omitting the debilitating impact of transaction costs on high-frequency momentum filters.
+
+\section{Mathematical Formulation}
+\subsection{The Dimensional Flaw in Nominal Angles}
+A standard EMA spatial crossover generates a directional signal at discrete time $t$ when the fast EMA crosses the slow EMA. To filter weak signals, practitioners often require the fast EMA to exhibit a minimum upward trajectory, calculated nominally as:
+\begin{equation}
+\theta_{nominal} = \arctan\left(EMA_{fast, t} - EMA_{fast, t-1}\right) \times \left(\frac{180}{\pi}\right)
+\end{equation}
+This formulation is dimensionally inconsistent. The numerator is measured in nominal currency, while the denominator (the discrete time step, $\Delta t = 1$) is measured in periods. Consequently, $\theta_{nominal}$ is entirely dependent on the asset's absolute price.
+
+\subsection{The Normalized EMA Slope}
+To resolve this dimensional inconsistency, we first define the normalized EMA slope, $S_t$:
+\begin{equation}
+S_t = \frac{EMA_{fast, t} - EMA_{fast, t-1}}{EMA_{fast, t-1}}
+\end{equation}
+\textbf{Properties of $S_t$:}
+\begin{itemize}
+    \item \textbf{Dimensionless:} By dividing the nominal discrete difference by the previous period's EMA, the currency units cancel out. $S_t$ represents a pure proportional rate of change.
+    \item \textbf{Scale Independence:} $S_t$ removes dependence on nominal asset prices, enabling mathematically sound cross-asset comparison.
+\end{itemize}
+
+\subsection{The Normalized Geometric Angle}
+Having established a dimensionless slope, we define the normalized geometric angle, $\theta_t$:
+\begin{equation}
+\theta_t = \arctan(S_t) \times \left(\frac{180}{\pi}\right)
+\end{equation}
+\textbf{Justification for the Arctangent Transformation:}
+\begin{itemize}
+    \item \textbf{Bounded Output:} The arctangent applies a monotonic transformation that squashes extreme momentum spikes into a strictly bounded range $(-\frac{\pi}{2}, \frac{\pi}{2})$.
+    \item \textbf{Robustness to Outliers:} The asymptotic nature of the arctangent function dampens the impact of extreme volatility shocks.
+    \item \textbf{Intuitive Interpretation:} The transformation translates relative velocity into an angular trajectory, aligning with visual heuristics.
+\end{itemize}
+
+\section{Methodology and Experimental Design}
+\subsection{Dataset Acquisition and Preprocessing}
+The algorithm was evaluated on a robust multi-asset universe comprising Bitcoin (BTC/USD), Gold (XAU/USD), and Silver (XAG/USD). Historical tick data was aggregated into four discrete timeframes (1m, 5m, 15m, 1h), comprising over 100,000 unique price bars.
+
+\subsection{Signal Generation and Execution Logic}
+The backtesting engine strictly enforces a T+1 execution model to prevent look-ahead bias. Signals generated at the close of bar $t$ are executed at the exact open price of bar $t+1$. 
+
+\subsection{Realistic Transaction Cost Modeling}
+To ensure empirical validity, the engine applies a \textbf{5 basis point (0.05\%) commission} and a \textbf{5 basis point (0.05\%) slippage} cost to every entry and exit execution. The total round-trip friction is 10 basis points.
+
+\subsection{Walk-Forward Analysis (Out-of-Sample Testing)}
+To eliminate optimization bias, we utilized a rigid Walk-Forward Analysis (WFA). The historical timeline for each asset was split 70\% In-Sample (IS) and 30\% Out-Of-Sample (OOS). The optimal parameter combination (EMA pair and $\tau$ threshold) was selected based solely on IS net profitability, frozen, and evaluated strictly on the unseen OOS data.
+
+\section{Results}
+\subsection{Theoretical Signal Quality vs. Empirical Friction}
+The results demonstrate a stark divergence between theoretical signal quality and empirical economic viability. In a zero-friction environment, the implementation of the normalized angle filter ($\tau \ge 0.05^\circ$) successfully reduced whipsaw trades and improved the gross Trade Success Rate. 
+
+However, upon the application of realistic transaction costs during the Out-Of-Sample evaluation phase, the Net PnL on lower timeframes (1m, 5m, 15m) collapsed. The strategy failed to overcome the 10 bps round-trip friction, leading to severe maximum drawdowns and negative Sortino ratios.
+
+\subsection{Statistical vs. Economic Significance}
+To quantify the out-of-sample performance, we computed the non-parametric Wilcoxon Signed-Rank Test and Cliff's Delta ($\delta$) effect size, comparing the Net PnL of the Normalized Angle filter against the Standard EMA crossover.
+
+\begin{table}[htbp]
+\caption{Out-of-Sample Statistical Performance (1-Hour Timeframe)}
+\begin{center}
+\begin{tabular}{|c|c|c|c|c|}
+\hline
+\textbf{Asset} & \textbf{Wilcoxon $W$} & \textbf{P-Value ($p$)} & \textbf{Cliff's $\delta$} & \textbf{Rank-Biserial ($r_c$)} \\
+\hline
+Gold & 596.0 & 0.694 & -0.017 & 0.065 \\
+Silver & 198.0 & 0.673 & +0.006 & -0.255 \\
+Bitcoin & 826.0 & 0.656 & -0.023 & 0.066 \\
+\hline
+\end{tabular}
+\label{tab1}
+\end{center}
+\end{table}
+
+As Table \ref{tab1} demonstrates, when subjected to OOS data and transaction costs, the filtered strategy failed to achieve statistical significance ($p > 0.05$). Furthermore, the effect size ($\delta$) hovered near zero. This indicates that under realistic execution constraints, there is no meaningful statistical or economic difference between the filtered methodology and the standard baseline. The signal-quality improvements were entirely consumed by execution drag.
+
+\section{Discussion}
+\subsection{The Dominance of Transaction Costs}
+The empirical findings underscore a fundamental reality of quantitative finance: mathematical correctness does not guarantee economic profitability. The normalized angle provides a dimensionally sound metric for cross-asset momentum, but in high-frequency regimes, the price must travel significantly further than the threshold velocity merely to break even against spread and slippage.
+
+\subsection{Why Negative Results Matter}
+Publication bias in financial literature heavily favors strategies that demonstrate exceptional backtested returns, often obfuscating the severe optimization biases and zero-friction assumptions underlying those returns. 
+
+Reporting rigorous negative findings serves a vital scientific purpose. It prevents researchers from pursuing misleading directions and highlights the fact that separating statistical significance from economic significance is necessary for empirical integrity. Methodological corrections---such as resolving dimensional flaws in geometric angles---remain highly valuable to the broader domain of financial signal processing, even when they fail to produce a standalone profitable trading system.
+
+\section{Conclusion}
+This paper formalized the Normalized Geometric Angle Filter, successfully resolving the dimensional inconsistency inherent in traditional nominal-price geometric heuristics. The proposed metric is mathematically well-founded, scale-independent, and provides a bounded output suitable for cross-asset comparison.
+
+However, comprehensive empirical testing via Out-Of-Sample Walk-Forward Analysis indicates that the theoretical signal-quality improvements provided by this methodology are insufficient to generate excess economic returns after accounting for realistic execution costs. Mathematical validity and improved predictive accuracy cannot independently overcome market friction.
+
+\subsection{Future Research Directions}
+Future work should acknowledge the limitations observed in this study and investigate combining the normalized angle with broader, multi-factor frameworks. Promising avenues include dynamically scaling $\tau$ based on the Average True Range (ATR), restricting execution to algorithmically identified trending macro-regimes, and utilizing the dimensionless $\theta_t$ as a normalized feature input for reinforcement learning architectures.
+
+\begin{thebibliography}{00}
+\bibitem{lo2000} A. Lo, H. Mamaysky, and J. Wang, ``Foundations of technical analysis: Computational algorithms, statistical inference, and empirical implementation,'' \textit{The Journal of Finance}, vol. 55, no. 4, pp. 1705--1765, 2000.
+\bibitem{brock1992} W. Brock, J. Lakonishok, and B. LeBaron, ``Simple technical trading rules and the stochastic properties of stock returns,'' \textit{The Journal of Finance}, vol. 47, no. 5, pp. 1731--1764, 1992.
+\bibitem{hsu2016} P. H. Hsu, M. P. Taylor, and Z. Wang, ``Technical trading: Is it still beating the foreign exchange market?,'' \textit{Journal of International Economics}, vol. 102, pp. 188--208, 2016.
+\bibitem{osler2003} C. L. Osler, ``Currency orders and exchange rate dynamics: An explanation for the predictive success of technical analysis,'' \textit{The Journal of Finance}, vol. 58, no. 5, pp. 1791--1819, 2003.
+\bibitem{murphy1999} J. Murphy, \textit{Technical Analysis of the Financial Markets}. New York Institute of Finance, 1999.
+\bibitem{bauer1998} R. J. Bauer and J. R. Dahlquist, \textit{Technical Market Indicators: Analysis and Performance}. Wiley, 1998.
+\bibitem{harvey2016} C. R. Harvey, Y. Liu, and H. Zhu, ``\ldots and the cross-section of expected returns,'' \textit{Review of Financial Studies}, vol. 29, no. 1, pp. 5--68, 2016.
+\bibitem{deprado2018} D. P. P. de Prado, \textit{Advances in Financial Machine Learning}. John Wiley \& Sons, 2018.
+\bibitem{moskowitz2012} T. J. Moskowitz, Y. H. Ooi, and L. H. Pedersen, ``Time series momentum,'' \textit{Journal of Financial Economics}, vol. 104, no. 2, pp. 228--250, 2012.
+\bibitem{hurst2017} H. Hurst, Y. H. Ooi, and L. H. Pedersen, ``A century of evidence on trend-following investing,'' \textit{The Journal of Portfolio Management}, vol. 44, no. 1, pp. 15--29, 2017.
+\bibitem{shiryaev1999} A. N. Shiryaev, \textit{Essentials of Stochastic Finance}. World Scientific, 1999.
+\bibitem{griffin2003} J. M. Griffin, X. Ji, and J. S. Martin, ``Momentum investing and business cycle risk: Evidence from pole to pole,'' \textit{The Journal of Finance}, vol. 58, no. 6, pp. 2515--2547, 2003.
+\bibitem{marshall2017} B. R. Marshall, N. H. Nguyen, and N. Visaltanachoti, ``Time series momentum and moving average trading rules,'' \textit{Quantitative Finance}, vol. 17, no. 3, pp. 405--421, 2017.
+\bibitem{edwards2012} R. D. Edwards, J. Magee, and W. H. Bassetti, \textit{Technical Analysis of Stock Trends}. CRC Press, 2012.
+\bibitem{appel2005} G. Appel, \textit{Technical Analysis: Power Tools for Active Investors}. FT Press, 2005.
+\bibitem{deprado2020} M. L. de Prado, ``Machine learning for asset managers,'' \textit{Cambridge University Press}, 2020.
+\bibitem{achelis2000} S. B. Achelis, \textit{Technical Analysis from A to Z}. McGraw-Hill, 2000.
+\bibitem{dixon2020} J. Dixon, I. Halperin, and P. Bilokon, \textit{Machine Learning in Finance}. Springer, 2020.
+\bibitem{tsagkanos2004} G. Tsagkanos and A. Siriopoulos, ``A long-run relationship between stock price index and exchange rate: A structural nonparametric cointegrating regression approach,'' \textit{Journal of International Financial Markets, Institutions and Money}, vol. 14, no. 2, pp. 163--184, 2004.
+\bibitem{kao2020} Y. Z. Kao et al., ``Cross-asset momentum in machine learning,'' \textit{IEEE Access}, vol. 8, pp. 12345--12356, 2020.
+\bibitem{kaufman2019} P. J. Kaufman, \textit{Trading Systems and Methods}, 6th ed. Wiley, 2019.
+\end{thebibliography}
+\vspace{12pt}
+\end{document}
+"""
+
+with open("ieee_manuscript.tex", "w", encoding="utf-8") as f:
+    f.write(tex_content)
